@@ -13,6 +13,7 @@ import { socialCreateRoutes } from "./routes/social-create";
 import { groupRoutes, friendRoutes, notificationRoutes } from "./routes/misc";
 import { adminRoutes } from "./routes/admin";
 import { pushRoutes } from "./routes/push";
+import { avatarRoutes } from "./routes/avatar";
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -49,6 +50,7 @@ const app = new Elysia()
       .use(notificationRoutes)
       .use(adminRoutes)
       .use(pushRoutes)
+      .use(avatarRoutes)
   )
 
   .listen(PORT);

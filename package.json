@@ -7,12 +7,13 @@
     "start": "bun run src/index.ts"
   },
   "dependencies": {
-    "elysia": "^1.2.0",
-    "@elysiajs/cors": "^1.2.0",
+    "@aws-sdk/client-s3": "^3.1009.0",
     "@elysiajs/bearer": "^1.2.0",
-    "pg": "^8.13.0",
-    "jsonwebtoken": "^9.0.2",
+    "@elysiajs/cors": "^1.2.0",
     "bcryptjs": "^2.4.3",
+    "elysia": "^1.2.0",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.0",
     "resend": "^4.0.0"
   },
   "devDependencies": {
