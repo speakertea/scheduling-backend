@@ -27,8 +27,19 @@ export async function createTables() {
       name            TEXT NOT NULL DEFAULT 'Your Name',
       about_me        TEXT NOT NULL DEFAULT '',
       profile_picture TEXT NOT NULL DEFAULT '',
+      is_admin        BOOLEAN NOT NULL DEFAULT FALSE,
+      is_disabled     BOOLEAN NOT NULL DEFAULT FALSE,
+      last_active_at  TIMESTAMPTZ,
       created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    -- Add columns to existing tables if they don't exist
+    DO $$ BEGIN
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_disabled BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ;
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS events (
       id         TEXT PRIMARY KEY,
@@ -123,6 +134,27 @@ export async function createTables() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_verification_email ON verification_codes(email, code);
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id         SERIAL PRIMARY KEY,
+      admin_id   TEXT NOT NULL,
+      action     TEXT NOT NULL,
+      target_id  TEXT,
+      details    TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS api_request_logs (
+      id            SERIAL PRIMARY KEY,
+      method        TEXT NOT NULL,
+      path          TEXT NOT NULL,
+      status_code   INTEGER,
+      response_ms   INTEGER,
+      user_id       TEXT,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_logs_created ON api_request_logs(created_at DESC);
   `);
 }
 
@@ -269,4 +301,31 @@ async function seedCalendarEvents(userId: string) {
       [e.id, userId, e.title, e.creator, e.group, e.loc, e.start, e.end, e.notes, e.total, e.isGroup, e.accept, e.rem]
     );
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Admin utilities                                                    */
+/* ------------------------------------------------------------------ */
+
+export async function logAudit(adminId: string, action: string, targetId?: string, details?: string) {
+  await query(
+    "INSERT INTO audit_logs (admin_id, action, target_id, details) VALUES ($1,$2,$3,$4)",
+    [adminId, action, targetId || null, details || null]
+  );
+}
+
+export async function updateLastActive(userId: string) {
+  await query("UPDATE users SET last_active_at = NOW() WHERE id = $1", [userId]);
+}
+
+export async function makeAdmin(email: string) {
+  const result = await query("UPDATE users SET is_admin = TRUE WHERE email = $1", [email.toLowerCase().trim()]);
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function logApiRequest(method: string, path: string, statusCode: number, responseMs: number, userId?: string) {
+  await query(
+    "INSERT INTO api_request_logs (method, path, status_code, response_ms, user_id) VALUES ($1,$2,$3,$4,$5)",
+    [method, path, statusCode, responseMs, userId || null]
+  );
 }

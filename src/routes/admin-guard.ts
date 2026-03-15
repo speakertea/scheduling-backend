@@ -3,9 +3,9 @@ import { verifyToken } from "../auth";
 import { query, updateLastActive } from "../db";
 
 /**
- * Auth guard: verifies JWT, checks disabled status, updates last_active.
+ * Admin guard: verifies JWT, checks is_admin flag, updates last_active.
  */
-export const authGuard = new Elysia({ name: "authGuard" })
+export const adminGuard = new Elysia({ name: "adminGuard" })
   .resolve(async ({ headers, set }) => {
     const token = (headers.authorization || "").replace("Bearer ", "");
     if (!token) {
@@ -14,9 +14,7 @@ export const authGuard = new Elysia({ name: "authGuard" })
     }
     try {
       const { userId } = verifyToken(token);
-
-      // Check if user exists and isn't disabled
-      const { rows } = await query("SELECT is_disabled FROM users WHERE id = $1", [userId]);
+      const { rows } = await query("SELECT id, is_admin, is_disabled FROM users WHERE id = $1", [userId]);
       if (rows.length === 0) {
         set.status = 401;
         return { userId: null as string | null, authError: "User not found" };
@@ -25,10 +23,11 @@ export const authGuard = new Elysia({ name: "authGuard" })
         set.status = 403;
         return { userId: null as string | null, authError: "Account disabled" };
       }
-
-      // Fire-and-forget last active update
+      if (!rows[0].is_admin) {
+        set.status = 403;
+        return { userId: null as string | null, authError: "Admin access required" };
+      }
       updateLastActive(userId).catch(() => {});
-
       return { userId: userId as string | null, authError: null as string | null };
     } catch {
       set.status = 401;
