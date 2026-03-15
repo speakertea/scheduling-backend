@@ -30,6 +30,7 @@ export async function createTables() {
       is_admin        BOOLEAN NOT NULL DEFAULT FALSE,
       is_disabled     BOOLEAN NOT NULL DEFAULT FALSE,
       last_active_at  TIMESTAMPTZ,
+      push_token      TEXT,
       created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -38,6 +39,7 @@ export async function createTables() {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_disabled BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT;
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
 
@@ -50,10 +52,16 @@ export async function createTables() {
       end_at     TEXT NOT NULL,
       location   TEXT,
       notes      TEXT,
+      notified   BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id);
     CREATE INDEX IF NOT EXISTS idx_events_start ON events(user_id, start_at);
+
+    DO $$ BEGIN
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS notified BOOLEAN NOT NULL DEFAULT FALSE;
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS groups_ (
       id            TEXT PRIMARY KEY,

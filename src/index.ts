@@ -3,6 +3,7 @@ import { cors } from "@elysiajs/cors";
 import { createTables, logApiRequest } from "./db";
 
 import { rateLimiter } from "./rate-limiter";
+import { checkAndSendNotifications } from "./notifications";
 import { authRoutes } from "./routes/auth";
 import { profileRoutes } from "./routes/profile";
 import { eventRoutes } from "./routes/events";
@@ -11,6 +12,7 @@ import { calendarEventRoutes } from "./routes/calendar-events";
 import { socialCreateRoutes } from "./routes/social-create";
 import { groupRoutes, friendRoutes, notificationRoutes } from "./routes/misc";
 import { adminRoutes } from "./routes/admin";
+import { pushRoutes } from "./routes/push";
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -46,9 +48,13 @@ const app = new Elysia()
       .use(friendRoutes)
       .use(notificationRoutes)
       .use(adminRoutes)
+      .use(pushRoutes)
   )
 
   .listen(PORT);
+
+// Check for upcoming events and push notify every 5 minutes
+setInterval(() => { checkAndSendNotifications().catch(console.error); }, 5 * 60_000);
 
 console.log(`
   🦊 Scheduling App API (Elysia + Bun)
