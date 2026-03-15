@@ -1,42 +1,241 @@
 import { Elysia, t } from "elysia";
 import bcrypt from "bcryptjs";
+import { Resend } from "resend";
 import { query, seedUserData } from "../db";
 import { signToken, verifyToken } from "../auth";
 
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+/* ─── Password strength checker ─── */
+
+const COMMON_PASSWORDS = new Set([
+  "password", "password1", "password123", "123456", "12345678", "123456789",
+  "1234567890", "qwerty", "qwerty123", "abc123", "letmein", "welcome",
+  "monkey", "dragon", "master", "login", "princess", "football", "shadow",
+  "sunshine", "trustno1", "iloveyou", "admin", "welcome1",
+]);
+
+function checkPasswordStrength(password: string): string | null {
+  if (password.length < 8) return "Password must be at least 8 characters.";
+  if (COMMON_PASSWORDS.has(password.toLowerCase())) return "That password is too common. Pick something less guessable.";
+  if (!/[A-Z]/.test(password)) return "Password must include at least one uppercase letter.";
+  if (!/[a-z]/.test(password)) return "Password must include at least one lowercase letter.";
+  if (!/[0-9]/.test(password)) return "Password must include at least one number.";
+  return null; // password is strong enough
+}
+
+/* ─── Generate 6-digit code ─── */
+
+function generateCode(): string {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+/* ─── Routes ─── */
+
 export const authRoutes = new Elysia({ prefix: "/auth" })
 
-  .post("/register", async ({ body }) => {
+  /*
+   * Step 1: Start registration
+   * - Validates password strength
+   * - Checks email isn't taken
+   * - Sends 6-digit code to email
+   * - Stores code + hashed password temporarily
+   */
+  .post("/register/start", async ({ body, set }) => {
     const { email, password, name } = body;
-    const { rows } = await query("SELECT id FROM users WHERE email = $1", [email.toLowerCase().trim()]);
-    if (rows.length > 0) {
-      return new Response(JSON.stringify({ error: "Email already registered" }), { status: 409 });
+    const cleanEmail = email.toLowerCase().trim();
+
+    // Check password strength
+    const weakness = checkPasswordStrength(password);
+    if (weakness) {
+      set.status = 400;
+      return { error: weakness };
     }
 
-    const id = crypto.randomUUID();
+    // Check if email already registered
+    const { rows } = await query("SELECT id FROM users WHERE email = $1", [cleanEmail]);
+    if (rows.length > 0) {
+      set.status = 409;
+      return { error: "Email already registered." };
+    }
+
+    // Generate code and hash password
+    const code = generateCode();
     const hash = bcrypt.hashSync(password, 10);
-    const username = `@${(name || email.split("@")[0]).toLowerCase().replace(/\s+/g, "")}`;
 
-    await query("INSERT INTO users (id,email,password_hash,username,name) VALUES ($1,$2,$3,$4,$5)",
-      [id, email.toLowerCase().trim(), hash, username, name || ""]);
-    await seedUserData(id);
+    // Expire any old codes for this email
+    await query("UPDATE verification_codes SET used = TRUE WHERE email = $1 AND used = FALSE", [cleanEmail]);
 
-    return { token: signToken(id), user: { id, email, username, name: name || "" } };
+    // Store the code (expires in 10 minutes)
+    await query(
+      "INSERT INTO verification_codes (email, code, name, password_hash, expires_at) VALUES ($1, $2, $3, $4, NOW() + INTERVAL '10 minutes')",
+      [cleanEmail, code, name || "", hash]
+    );
+
+    // Send the email
+    try {
+      await resend.emails.send({
+        from: "Scheduling App <onboarding@resend.dev>",
+        to: cleanEmail,
+        subject: "Your verification code",
+        html: `
+          <div style="font-family: sans-serif; max-width: 400px; margin: 0 auto; padding: 24px;">
+            <h2 style="color: #0f172a; margin-bottom: 8px;">Verify your email</h2>
+            <p style="color: #475569; margin-bottom: 24px;">Enter this code in the app to finish creating your account:</p>
+            <div style="background: #f1f5f9; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 24px;">
+              <span style="font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #0f172a;">${code}</span>
+            </div>
+            <p style="color: #94a3b8; font-size: 13px;">This code expires in 10 minutes. If you didn't request this, you can ignore this email.</p>
+          </div>
+        `,
+      });
+    } catch (err: any) {
+      console.error("[resend]", err.message);
+      set.status = 500;
+      return { error: "Failed to send verification email. Please try again." };
+    }
+
+    return { success: true, message: "Verification code sent to your email." };
   }, {
     body: t.Object({
       email: t.String(),
-      password: t.String({ minLength: 8 }),
+      password: t.String(),
       name: t.Optional(t.String()),
     }),
   })
 
-  .post("/login", async ({ body }) => {
+  /*
+   * Step 2: Verify code and create account
+   * - Checks the code matches and hasn't expired
+   * - Creates the user
+   * - Returns JWT token
+   */
+  .post("/register/verify", async ({ body, set }) => {
+    const { email, code } = body;
+    const cleanEmail = email.toLowerCase().trim();
+
+    // Find the most recent unused code for this email
+    const { rows } = await query(
+      "SELECT id, code, name, password_hash, expires_at FROM verification_codes WHERE email = $1 AND used = FALSE ORDER BY created_at DESC LIMIT 1",
+      [cleanEmail]
+    );
+
+    if (rows.length === 0) {
+      set.status = 400;
+      return { error: "No pending verification. Please register again." };
+    }
+
+    const record = rows[0];
+
+    // Check expiry
+    if (new Date(record.expires_at) < new Date()) {
+      await query("UPDATE verification_codes SET used = TRUE WHERE id = $1", [record.id]);
+      set.status = 400;
+      return { error: "Code expired. Please register again." };
+    }
+
+    // Check code
+    if (record.code !== code.trim()) {
+      set.status = 400;
+      return { error: "Incorrect code. Please try again." };
+    }
+
+    // Mark code as used
+    await query("UPDATE verification_codes SET used = TRUE WHERE id = $1", [record.id]);
+
+    // Check email isn't taken (in case someone registered between steps)
+    const { rows: existing } = await query("SELECT id FROM users WHERE email = $1", [cleanEmail]);
+    if (existing.length > 0) {
+      set.status = 409;
+      return { error: "Email already registered." };
+    }
+
+    // Create the user
+    const id = crypto.randomUUID();
+    const username = `@${(record.name || cleanEmail.split("@")[0]).toLowerCase().replace(/\s+/g, "")}`;
+
+    await query(
+      "INSERT INTO users (id, email, password_hash, username, name) VALUES ($1, $2, $3, $4, $5)",
+      [id, cleanEmail, record.password_hash, username, record.name || ""]
+    );
+    await seedUserData(id);
+
+    const token = signToken(id);
+    set.status = 201;
+    return { token, user: { id, email: cleanEmail, username, name: record.name || "" } };
+  }, {
+    body: t.Object({
+      email: t.String(),
+      code: t.String(),
+    }),
+  })
+
+  /*
+   * Resend code (if the first one didn't arrive)
+   */
+  .post("/register/resend", async ({ body, set }) => {
+    const cleanEmail = body.email.toLowerCase().trim();
+
+    // Find existing pending verification
+    const { rows } = await query(
+      "SELECT id, name, password_hash FROM verification_codes WHERE email = $1 AND used = FALSE ORDER BY created_at DESC LIMIT 1",
+      [cleanEmail]
+    );
+
+    if (rows.length === 0) {
+      set.status = 400;
+      return { error: "No pending registration found. Please start over." };
+    }
+
+    const record = rows[0];
+    const code = generateCode();
+
+    // Expire old code, create new one
+    await query("UPDATE verification_codes SET used = TRUE WHERE email = $1 AND used = FALSE", [cleanEmail]);
+    await query(
+      "INSERT INTO verification_codes (email, code, name, password_hash, expires_at) VALUES ($1, $2, $3, $4, NOW() + INTERVAL '10 minutes')",
+      [cleanEmail, code, record.name, record.password_hash]
+    );
+
+    try {
+      await resend.emails.send({
+        from: "Scheduling App <onboarding@resend.dev>",
+        to: cleanEmail,
+        subject: "Your new verification code",
+        html: `
+          <div style="font-family: sans-serif; max-width: 400px; margin: 0 auto; padding: 24px;">
+            <h2 style="color: #0f172a; margin-bottom: 8px;">New verification code</h2>
+            <p style="color: #475569; margin-bottom: 24px;">Here's your new code:</p>
+            <div style="background: #f1f5f9; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 24px;">
+              <span style="font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #0f172a;">${code}</span>
+            </div>
+            <p style="color: #94a3b8; font-size: 13px;">This code expires in 10 minutes.</p>
+          </div>
+        `,
+      });
+    } catch (err: any) {
+      console.error("[resend]", err.message);
+      set.status = 500;
+      return { error: "Failed to send email. Please try again." };
+    }
+
+    return { success: true, message: "New code sent." };
+  }, {
+    body: t.Object({
+      email: t.String(),
+    }),
+  })
+
+  /* Login — unchanged */
+  .post("/login", async ({ body, set }) => {
     const { email, password } = body;
     const { rows } = await query(
       "SELECT id,email,password_hash,username,name FROM users WHERE email = $1",
       [email.toLowerCase().trim()]
     );
     if (rows.length === 0 || !bcrypt.compareSync(password, rows[0].password_hash)) {
-      return new Response(JSON.stringify({ error: "Invalid email or password" }), { status: 401 });
+      set.status = 401;
+      return { error: "Invalid email or password" };
     }
     const u = rows[0];
     return { token: signToken(u.id), user: { id: u.id, email: u.email, username: u.username, name: u.name } };
@@ -47,15 +246,17 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     }),
   })
 
-  .get("/me", async ({ headers }) => {
+  /* Me — unchanged */
+  .get("/me", async ({ headers, set }) => {
     const token = (headers.authorization || "").replace("Bearer ", "");
     try {
       const { userId } = verifyToken(token);
       const { rows } = await query("SELECT id,email,username,name,about_me,profile_picture FROM users WHERE id = $1", [userId]);
-      if (rows.length === 0) return new Response(JSON.stringify({ error: "User not found" }), { status: 404 });
+      if (rows.length === 0) { set.status = 404; return { error: "User not found" }; }
       const u = rows[0];
       return { id: u.id, email: u.email, username: u.username, name: u.name, aboutMe: u.about_me, profilePicture: u.profile_picture };
     } catch {
-      return new Response(JSON.stringify({ error: "Invalid token" }), { status: 401 });
+      set.status = 401;
+      return { error: "Invalid token" };
     }
   });

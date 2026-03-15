@@ -111,6 +111,18 @@ export async function createTables() {
       type            TEXT NOT NULL CHECK(type IN ('general','invite')),
       UNIQUE(user_id, notification_id, type)
     );
+
+    CREATE TABLE IF NOT EXISTS verification_codes (
+      id         SERIAL PRIMARY KEY,
+      email      TEXT NOT NULL,
+      code       TEXT NOT NULL,
+      name       TEXT,
+      password_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used       BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_verification_email ON verification_codes(email, code);
   `);
 }
 

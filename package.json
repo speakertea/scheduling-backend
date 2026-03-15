@@ -12,7 +12,8 @@
     "@elysiajs/bearer": "^1.2.0",
     "pg": "^8.13.0",
     "jsonwebtoken": "^9.0.2",
-    "bcryptjs": "^2.4.3"
+    "bcryptjs": "^2.4.3",
+    "resend": "^4.0.0"
   },
   "devDependencies": {
     "@types/pg": "^8.11.0",
