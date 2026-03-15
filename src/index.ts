@@ -2,6 +2,7 @@ import { Elysia } from "elysia";
 import { cors } from "@elysiajs/cors";
 import { createTables, logApiRequest } from "./db";
 
+import { rateLimiter } from "./rate-limiter";
 import { authRoutes } from "./routes/auth";
 import { profileRoutes } from "./routes/profile";
 import { eventRoutes } from "./routes/events";
@@ -17,6 +18,7 @@ await createTables();
 
 const app = new Elysia()
   .use(cors())
+  .use(rateLimiter)
 
   // Request logging middleware (logs every API request for system health tracking)
   .onAfterHandle(({ request, set }) => {
