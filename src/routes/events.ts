@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { query } from "../db";
 import { authGuard } from "./guard";
+import { sanitizeTitle, sanitizeLocation, sanitizeNotes } from "../utils";
 
 const toEvent = (r: any) => ({
   id: r.id, title: r.title, type: r.type, startAt: r.start_at, endAt: r.end_at,
@@ -22,7 +23,10 @@ export const eventRoutes = new Elysia({ prefix: "/events" })
   })
 
   .post("/", async ({ userId, body, set }) => {
-    const { title, type, startAt, endAt, location, notes } = body;
+    const { title: rawTitle, type, startAt, endAt, location: rawLocation, notes: rawNotes } = body;
+    const title    = sanitizeTitle(rawTitle);
+    const location = rawLocation ? sanitizeLocation(rawLocation) : undefined;
+    const notes    = rawNotes    ? sanitizeNotes(rawNotes)        : undefined;
     const id = crypto.randomUUID();
     await query(
       "INSERT INTO events (id,user_id,title,type,start_at,end_at,location,notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",

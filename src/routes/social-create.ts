@@ -1,12 +1,16 @@
 import { Elysia, t } from "elysia";
 import { query } from "../db";
 import { authGuard } from "./guard";
+import { sanitizeTitle, sanitizeLocation, sanitizeNotes } from "../utils";
 
 export const socialCreateRoutes = new Elysia({ prefix: "/social/create" })
   .use(authGuard)
 
   .post("/", async ({ userId, body, set }) => {
-    const { eventType, sendTo, selectedGroupId, selectedFriendIds, title, location, date, startTime, endTime, notes } = body;
+    const { eventType, sendTo, selectedGroupId, selectedFriendIds, title: rawTitle, location: rawLocation, date, startTime, endTime, notes: rawNotes } = body;
+    const title    = sanitizeTitle(rawTitle);
+    const location = sanitizeLocation(rawLocation);
+    const notes    = rawNotes ? sanitizeNotes(rawNotes) : undefined;
     const startAt = `${date}T${startTime}:00`;
     const endAt = `${date}T${endTime}:00`;
 
@@ -42,7 +46,7 @@ export const socialCreateRoutes = new Elysia({ prefix: "/social/create" })
 
       await query(
         `INSERT INTO invites (id,user_id,title,organizer,group_name,location,start_at,end_at,total_invited,is_group) VALUES ($1,$2,$3,'You',$4,$5,$6,$7,$8,$9)`,
-        [inviteId, userId, title.trim(), groupName, location.trim(), startAt, endAt, totalInvited, isGroup]
+        [inviteId, userId, title, groupName, location, startAt, endAt, totalInvited, isGroup]
       );
       for (const a of attendees) {
         await query("INSERT INTO invite_attendees (invite_id,name,status,is_friend) VALUES ($1,$2,NULL,$3)", [inviteId, a.name, a.isFriend]);
@@ -68,7 +72,7 @@ export const socialCreateRoutes = new Elysia({ prefix: "/social/create" })
       const calId = crypto.randomUUID();
       await query(
         `INSERT INTO calendar_events (id,user_id,title,creator,group_name,location,start_at,end_at,notes,total_sent_to,is_group) VALUES ($1,$2,$3,'You',$4,$5,$6,$7,$8,$9,$10)`,
-        [calId, userId, title.trim(), groupName, location.trim(), startAt, endAt, notes?.trim() || null, totalSentTo, isGroup]
+        [calId, userId, title, groupName, location, startAt, endAt, notes || null, totalSentTo, isGroup]
       );
 
       set.status = 201;

@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { Resend } from "resend";
 import { query, seedUserData } from "../db";
 import { signToken, verifyToken } from "../auth";
+import { sanitizeName, sanitizeEmail } from "../utils";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -43,7 +44,8 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
    */
   .post("/register/start", async ({ body, set }) => {
     const { email, password, name } = body;
-    const cleanEmail = email.toLowerCase().trim();
+    const cleanEmail = sanitizeEmail(email);
+    const cleanName  = name ? sanitizeName(name) : "";
 
     // Check password strength
     const weakness = checkPasswordStrength(password);
@@ -69,7 +71,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     // Store the code (expires in 10 minutes)
     await query(
       "INSERT INTO verification_codes (email, code, name, password_hash, expires_at) VALUES ($1, $2, $3, $4, NOW() + INTERVAL '10 minutes')",
-      [cleanEmail, code, name || "", hash]
+      [cleanEmail, code, cleanName, hash]
     );
 
     // Send the email
@@ -174,7 +176,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
    * Resend code (if the first one didn't arrive)
    */
   .post("/register/resend", async ({ body, set }) => {
-    const cleanEmail = body.email.toLowerCase().trim();
+    const cleanEmail = sanitizeEmail(body.email);
 
     // Find existing pending verification
     const { rows } = await query(
@@ -231,7 +233,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     const { email, password } = body;
     const { rows } = await query(
       "SELECT id,email,password_hash,username,name FROM users WHERE email = $1",
-      [email.toLowerCase().trim()]
+      [sanitizeEmail(email)]
     );
     if (rows.length === 0 || !bcrypt.compareSync(password, rows[0].password_hash)) {
       set.status = 401;
@@ -265,7 +267,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
    * Forgot Password Step 1: Send reset code to email
    */
   .post("/forgot-password/start", async ({ body, set }) => {
-    const cleanEmail = body.email.toLowerCase().trim();
+    const cleanEmail = sanitizeEmail(body.email);
 
     // Check user exists
     const { rows } = await query("SELECT id FROM users WHERE email = $1", [cleanEmail]);
@@ -320,7 +322,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
    */
   .post("/forgot-password/verify", async ({ body, set }) => {
     const { email, code, newPassword } = body;
-    const cleanEmail = email.toLowerCase().trim();
+    const cleanEmail = sanitizeEmail(email);
 
     // Check password strength
     const weakness = checkPasswordStrength(newPassword);
@@ -381,7 +383,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
    * Forgot Password: Resend code
    */
   .post("/forgot-password/resend", async ({ body, set }) => {
-    const cleanEmail = body.email.toLowerCase().trim();
+    const cleanEmail = sanitizeEmail(body.email);
 
     // Check user exists
     const { rows: users } = await query("SELECT id FROM users WHERE email = $1", [cleanEmail]);

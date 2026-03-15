@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { query } from "../db";
 import { authGuard } from "./guard";
+import { sanitizeName, sanitizeNotes } from "../utils";
 
 export const profileRoutes = new Elysia({ prefix: "/profile" })
   .use(authGuard)
@@ -13,7 +14,10 @@ export const profileRoutes = new Elysia({ prefix: "/profile" })
   })
 
   .patch("/", async ({ userId, body }) => {
-    const { username, name, aboutMe, profilePicture } = body;
+    const { username: rawUsername, name: rawName, aboutMe: rawAboutMe, profilePicture } = body;
+    const username = rawUsername !== undefined ? sanitizeName(rawUsername)  : undefined;
+    const name     = rawName     !== undefined ? sanitizeName(rawName)      : undefined;
+    const aboutMe  = rawAboutMe  !== undefined ? sanitizeNotes(rawAboutMe)  : undefined;
     const sets: string[] = [];
     const params: any[] = [];
     let idx = 1;
