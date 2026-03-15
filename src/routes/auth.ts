@@ -259,4 +259,167 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
       set.status = 401;
       return { error: "Invalid token" };
     }
+  })
+
+  /*
+   * Forgot Password Step 1: Send reset code to email
+   */
+  .post("/forgot-password/start", async ({ body, set }) => {
+    const cleanEmail = body.email.toLowerCase().trim();
+
+    // Check user exists
+    const { rows } = await query("SELECT id FROM users WHERE email = $1", [cleanEmail]);
+    if (rows.length === 0) {
+      // Don't reveal whether email exists — always say "sent"
+      return { success: true, message: "If that email is registered, a code has been sent." };
+    }
+
+    const code = generateCode();
+
+    // Expire old reset codes for this email
+    await query(
+      "UPDATE verification_codes SET used = TRUE WHERE email = $1 AND used = FALSE AND name = '__reset__'",
+      [cleanEmail]
+    );
+
+    // Store the code (name = '__reset__' to distinguish from registration codes, password_hash is a placeholder)
+    await query(
+      "INSERT INTO verification_codes (email, code, name, password_hash, expires_at) VALUES ($1, $2, '__reset__', '__reset__', NOW() + INTERVAL '10 minutes')",
+      [cleanEmail, code]
+    );
+
+    try {
+      await resend.emails.send({
+        from: "Scheduling App <onboarding@resend.dev>",
+        to: cleanEmail,
+        subject: "Reset your password",
+        html: `
+          <div style="font-family: sans-serif; max-width: 400px; margin: 0 auto; padding: 24px;">
+            <h2 style="color: #0f172a; margin-bottom: 8px;">Reset your password</h2>
+            <p style="color: #475569; margin-bottom: 24px;">Enter this code in the app to set a new password:</p>
+            <div style="background: #f1f5f9; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 24px;">
+              <span style="font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #0f172a;">${code}</span>
+            </div>
+            <p style="color: #94a3b8; font-size: 13px;">This code expires in 10 minutes. If you didn't request this, you can ignore this email.</p>
+          </div>
+        `,
+      });
+    } catch (err: any) {
+      console.error("[resend]", err.message);
+      set.status = 500;
+      return { error: "Failed to send reset email. Please try again." };
+    }
+
+    return { success: true, message: "If that email is registered, a code has been sent." };
+  }, {
+    body: t.Object({ email: t.String() }),
+  })
+
+  /*
+   * Forgot Password Step 2: Verify code and set new password
+   */
+  .post("/forgot-password/verify", async ({ body, set }) => {
+    const { email, code, newPassword } = body;
+    const cleanEmail = email.toLowerCase().trim();
+
+    // Check password strength
+    const weakness = checkPasswordStrength(newPassword);
+    if (weakness) {
+      set.status = 400;
+      return { error: weakness };
+    }
+
+    // Find the reset code
+    const { rows } = await query(
+      "SELECT id, code, expires_at FROM verification_codes WHERE email = $1 AND used = FALSE AND name = '__reset__' ORDER BY created_at DESC LIMIT 1",
+      [cleanEmail]
+    );
+
+    if (rows.length === 0) {
+      set.status = 400;
+      return { error: "No pending reset. Please request a new code." };
+    }
+
+    const record = rows[0];
+
+    if (new Date(record.expires_at) < new Date()) {
+      await query("UPDATE verification_codes SET used = TRUE WHERE id = $1", [record.id]);
+      set.status = 400;
+      return { error: "Code expired. Please request a new one." };
+    }
+
+    if (record.code !== code.trim()) {
+      set.status = 400;
+      return { error: "Incorrect code. Please try again." };
+    }
+
+    // Mark code as used
+    await query("UPDATE verification_codes SET used = TRUE WHERE id = $1", [record.id]);
+
+    // Update password
+    const hash = bcrypt.hashSync(newPassword, 10);
+    const result = await query("UPDATE users SET password_hash = $1 WHERE email = $2 RETURNING id, email, username, name", [hash, cleanEmail]);
+
+    if (result.rows.length === 0) {
+      set.status = 400;
+      return { error: "Account not found." };
+    }
+
+    // Auto-login: return a token so they don't have to log in again
+    const u = result.rows[0];
+    const token = signToken(u.id);
+    return { success: true, token, user: { id: u.id, email: u.email, username: u.username, name: u.name } };
+  }, {
+    body: t.Object({
+      email: t.String(),
+      code: t.String(),
+      newPassword: t.String(),
+    }),
+  })
+
+  /*
+   * Forgot Password: Resend code
+   */
+  .post("/forgot-password/resend", async ({ body, set }) => {
+    const cleanEmail = body.email.toLowerCase().trim();
+
+    // Check user exists
+    const { rows: users } = await query("SELECT id FROM users WHERE email = $1", [cleanEmail]);
+    if (users.length === 0) {
+      return { success: true, message: "If that email is registered, a new code has been sent." };
+    }
+
+    const code = generateCode();
+
+    await query("UPDATE verification_codes SET used = TRUE WHERE email = $1 AND used = FALSE AND name = '__reset__'", [cleanEmail]);
+    await query(
+      "INSERT INTO verification_codes (email, code, name, password_hash, expires_at) VALUES ($1, $2, '__reset__', '__reset__', NOW() + INTERVAL '10 minutes')",
+      [cleanEmail, code]
+    );
+
+    try {
+      await resend.emails.send({
+        from: "Scheduling App <onboarding@resend.dev>",
+        to: cleanEmail,
+        subject: "Your new password reset code",
+        html: `
+          <div style="font-family: sans-serif; max-width: 400px; margin: 0 auto; padding: 24px;">
+            <h2 style="color: #0f172a; margin-bottom: 8px;">New reset code</h2>
+            <p style="color: #475569; margin-bottom: 24px;">Here's your new code:</p>
+            <div style="background: #f1f5f9; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 24px;">
+              <span style="font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #0f172a;">${code}</span>
+            </div>
+            <p style="color: #94a3b8; font-size: 13px;">This code expires in 10 minutes.</p>
+          </div>
+        `,
+      });
+    } catch (err: any) {
+      console.error("[resend]", err.message);
+      set.status = 500;
+      return { error: "Failed to send email." };
+    }
+
+    return { success: true, message: "New code sent." };
+  }, {
+    body: t.Object({ email: t.String() }),
   });
