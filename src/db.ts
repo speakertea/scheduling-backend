@@ -43,6 +43,11 @@ export async function createTables() {
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
 
+    DO $$ BEGIN
+      ALTER TABLE users ADD CONSTRAINT users_username_unique UNIQUE (username);
+    EXCEPTION WHEN duplicate_table THEN NULL;
+    END $$;
+
     CREATE TABLE IF NOT EXISTS events (
       id         TEXT PRIMARY KEY,
       user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

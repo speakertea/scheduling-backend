@@ -13,7 +13,7 @@ export const profileRoutes = new Elysia({ prefix: "/profile" })
     return { username: u.username, name: u.name, aboutMe: u.about_me, profilePicture: u.profile_picture };
   })
 
-  .patch("/", async ({ userId, body }) => {
+  .patch("/", async ({ userId, body, set }) => {
     const { username: rawUsername, name: rawName, aboutMe: rawAboutMe, profilePicture } = body;
     const username = rawUsername !== undefined ? sanitizeName(rawUsername)  : undefined;
     const name     = rawName     !== undefined ? sanitizeName(rawName)      : undefined;
@@ -22,7 +22,17 @@ export const profileRoutes = new Elysia({ prefix: "/profile" })
     const params: any[] = [];
     let idx = 1;
 
-    if (username !== undefined) { sets.push(`username=$${idx++}`); params.push(username); }
+    if (username !== undefined) {
+      const { rows: taken } = await query(
+        "SELECT id FROM users WHERE username = $1 AND id != $2",
+        [username, userId]
+      );
+      if (taken.length > 0) {
+        set.status = 409;
+        return { error: "Username already taken." };
+      }
+      sets.push(`username=$${idx++}`); params.push(username);
+    }
     if (name !== undefined) { sets.push(`name=$${idx++}`); params.push(name); }
     if (aboutMe !== undefined) { sets.push(`about_me=$${idx++}`); params.push(aboutMe); }
     if (profilePicture !== undefined) { sets.push(`profile_picture=$${idx++}`); params.push(profilePicture); }

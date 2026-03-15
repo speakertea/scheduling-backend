@@ -154,7 +154,15 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
 
     // Create the user
     const id = crypto.randomUUID();
-    const username = `@${(record.name || cleanEmail.split("@")[0]).toLowerCase().replace(/\s+/g, "")}`;
+    const base = `@${(record.name || cleanEmail.split("@")[0]).toLowerCase().replace(/\s+/g, "")}`;
+
+    // Ensure uniqueness: append random digits if the base username is taken
+    let username = base;
+    while (true) {
+      const { rows: clash } = await query("SELECT id FROM users WHERE username = $1", [username]);
+      if (clash.length === 0) break;
+      username = `${base}${Math.floor(100 + Math.random() * 900)}`;
+    }
 
     await query(
       "INSERT INTO users (id, email, password_hash, username, name) VALUES ($1, $2, $3, $4, $5)",
