@@ -1,0 +1,23 @@
+{
+  "name": "scheduling-app-backend",
+  "version": "1.0.0",
+  "description": "Scheduling App API — Elysia + Bun + PostgreSQL",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "elysia": "^1.2.0",
+    "@elysiajs/cors": "^1.2.0",
+    "@elysiajs/bearer": "^1.2.0",
+    "pg": "^8.13.0",
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/bcryptjs": "^2.4.6",
+    "bun-types": "latest"
+  }
+}
