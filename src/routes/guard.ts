@@ -6,7 +6,7 @@ import { query, updateLastActive } from "../db";
  * Auth guard: verifies JWT, checks disabled status, updates last_active.
  */
 export const authGuard = new Elysia({ name: "authGuard" })
-  .resolve(async ({ headers, set }) => {
+  .resolve({ as: "scoped" }, async ({ headers, set }) => {
     const token = (headers.authorization || "").replace("Bearer ", "");
     if (!token) {
       set.status = 401;
@@ -35,7 +35,7 @@ export const authGuard = new Elysia({ name: "authGuard" })
       return { userId: null as string | null, authError: "Invalid or expired token" };
     }
   })
-  .onBeforeHandle(({ userId, authError, set }) => {
+  .onBeforeHandle({ as: "scoped" }, ({ userId, authError, set }) => {
     if (authError) {
       set.status = set.status && set.status >= 400 ? set.status : 401;
       return { error: authError };

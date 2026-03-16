@@ -24,9 +24,9 @@ async function getUser(userId: string) {
 export const profileRoutes = new Elysia({ prefix: "/profile" })
   .use(authGuard)
 
-  .get("/", async ({ userId }) => {
+  .get("/", async ({ userId, set }) => {
     const u = await getUser(userId);
-    if (!u) return { error: "User not found" };
+    if (!u) { set.status = 404; return { error: "User not found" }; }
     return {
       username: u.username,
       name: u.name,
