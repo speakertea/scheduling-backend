@@ -7,10 +7,19 @@ export const profileRoutes = new Elysia({ prefix: "/profile" })
   .use(authGuard)
 
   .get("/", async ({ userId }) => {
-    const { rows } = await query("SELECT username,name,about_me,profile_picture FROM users WHERE id=$1", [userId]);
+    const { rows } = await query(
+      "SELECT username,name,about_me,profile_picture,username_changed_at FROM users WHERE id=$1",
+      [userId]
+    );
     if (rows.length === 0) return { error: "User not found" };
     const u = rows[0];
-    return { username: u.username, name: u.name, aboutMe: u.about_me, profilePicture: u.profile_picture };
+    return {
+      username: u.username,
+      name: u.name,
+      aboutMe: u.about_me,
+      profilePicture: u.profile_picture,
+      usernameChangedAt: u.username_changed_at ?? null,
+    };
   })
 
   .patch("/", async ({ userId, body, set }) => {
@@ -23,15 +32,38 @@ export const profileRoutes = new Elysia({ prefix: "/profile" })
     let idx = 1;
 
     if (username !== undefined) {
-      const { rows: taken } = await query(
-        "SELECT id FROM users WHERE username = $1 AND id != $2",
-        [username, userId]
+      // Enforce 30-day cooldown
+      const { rows: me } = await query(
+        "SELECT username, username_changed_at FROM users WHERE id=$1",
+        [userId]
       );
-      if (taken.length > 0) {
-        set.status = 409;
-        return { error: "Username already taken." };
+      const currentUsername = me[0]?.username;
+      const lastChanged: Date | null = me[0]?.username_changed_at ? new Date(me[0].username_changed_at) : null;
+
+      // Only enforce cooldown if the username is actually changing
+      if (username !== currentUsername) {
+        if (lastChanged) {
+          const daysSince = (Date.now() - lastChanged.getTime()) / (1000 * 60 * 60 * 24);
+          if (daysSince < 30) {
+            const daysLeft = Math.ceil(30 - daysSince);
+            set.status = 429;
+            return { error: `You can change your username again in ${daysLeft} day${daysLeft === 1 ? "" : "s"}.` };
+          }
+        }
+
+        // Check for duplicates
+        const { rows: taken } = await query(
+          "SELECT id FROM users WHERE username = $1 AND id != $2",
+          [username, userId]
+        );
+        if (taken.length > 0) {
+          set.status = 409;
+          return { error: "Username already taken." };
+        }
+
+        sets.push(`username=$${idx++}`); params.push(username);
+        sets.push(`username_changed_at=$${idx++}`); params.push(new Date().toISOString());
       }
-      sets.push(`username=$${idx++}`); params.push(username);
     }
     if (name !== undefined) { sets.push(`name=$${idx++}`); params.push(name); }
     if (aboutMe !== undefined) { sets.push(`about_me=$${idx++}`); params.push(aboutMe); }
@@ -42,9 +74,18 @@ export const profileRoutes = new Elysia({ prefix: "/profile" })
       await query(`UPDATE users SET ${sets.join(",")} WHERE id=$${idx}`, params);
     }
 
-    const { rows } = await query("SELECT username,name,about_me,profile_picture FROM users WHERE id=$1", [userId]);
+    const { rows } = await query(
+      "SELECT username,name,about_me,profile_picture,username_changed_at FROM users WHERE id=$1",
+      [userId]
+    );
     const u = rows[0];
-    return { username: u.username, name: u.name, aboutMe: u.about_me, profilePicture: u.profile_picture };
+    return {
+      username: u.username,
+      name: u.name,
+      aboutMe: u.about_me,
+      profilePicture: u.profile_picture,
+      usernameChangedAt: u.username_changed_at ?? null,
+    };
   }, {
     body: t.Object({
       username: t.Optional(t.String()),
