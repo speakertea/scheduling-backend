@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { query } from "../db";
 import { authGuard } from "./guard";
+import { broadcastToUser } from "../broadcast";
 
 const toCalEvent = (r: any) => ({
   id: r.id, title: r.title, creator: r.creator, group: r.group_name || undefined,
@@ -52,7 +53,9 @@ export const calendarEventRoutes = new Elysia({ prefix: "/calendar-events" })
     }
 
     const { rows: updated } = await query("SELECT * FROM calendar_events WHERE id=$1", [row.id]);
-    return toCalEvent(updated[0]);
+    const result = toCalEvent(updated[0]);
+    broadcastToUser(userId, { type: "calendar_event_updated", payload: result });
+    return result;
   }, {
     body: t.Object({
       acceptStatus: t.Optional(t.Union([t.Literal("accepted"), t.Literal("declined"), t.Null()])),

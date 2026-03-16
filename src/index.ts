@@ -1,4 +1,4 @@
-import { Elysia } from "elysia";
+import { Elysia, t } from "elysia";
 import { cors } from "@elysiajs/cors";
 import { createTables, logApiRequest } from "./db";
 
@@ -14,6 +14,8 @@ import { groupRoutes, friendRoutes, notificationRoutes } from "./routes/misc";
 import { adminRoutes } from "./routes/admin";
 import { pushRoutes } from "./routes/push";
 import { avatarRoutes } from "./routes/avatar";
+import { verifyToken } from "./auth";
+import { addConnection, removeConnection } from "./broadcast";
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -51,6 +53,24 @@ const app = new Elysia({ serve: { maxRequestBodySize: 10 * 1024 * 1024 } })
       .use(adminRoutes)
       .use(pushRoutes)
       .use(avatarRoutes)
+      .ws("/ws", {
+        query: t.Object({ token: t.Optional(t.String()) }),
+        open(ws) {
+          const token = (ws.data.query as any)?.token ?? "";
+          try {
+            const { userId } = verifyToken(token);
+            (ws.data as any).userId = userId;
+            addConnection(userId, ws);
+          } catch {
+            ws.close();
+          }
+        },
+        close(ws) {
+          const userId = (ws.data as any).userId;
+          if (userId) removeConnection(userId, ws);
+        },
+        message() {},
+      })
   )
 
   .listen(PORT);

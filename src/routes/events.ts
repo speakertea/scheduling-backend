@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import { query as dbQuery } from "../db";
 import { authGuard } from "./guard";
 import { sanitizeTitle, sanitizeLocation, sanitizeNotes } from "../utils";
+import { broadcastToUser } from "../broadcast";
 
 const toEvent = (r: any) => ({
   id: r.id, title: r.title, type: r.type, startAt: r.start_at, endAt: r.end_at,
@@ -68,6 +69,18 @@ export const eventRoutes = new Elysia({ prefix: "/events" })
     }
 
     set.status = 201;
+    broadcastToUser(userId, {
+      type: "event_created",
+      payload: { id: parentId, title, type, startAt, endAt, location, notes, recurrenceRule },
+    });
+    if (recurrenceRule && recurrenceEndDate) {
+      const { rows: instances } = await dbQuery(
+        "SELECT * FROM events WHERE parent_event_id=$1", [parentId]
+      );
+      for (const inst of instances) {
+        broadcastToUser(userId, { type: "event_created", payload: toEvent(inst) });
+      }
+    }
     return {
       id: parentId, title, type, startAt, endAt,
       location: location || undefined, notes: notes || undefined,
@@ -140,5 +153,11 @@ export const eventRoutes = new Elysia({ prefix: "/events" })
       await dbQuery("DELETE FROM events WHERE id=$1 AND user_id=$2", [params.id, userId]);
     }
 
+    if (deleteAll) {
+      const parentId = ev.parent_event_id || ev.id;
+      broadcastToUser(userId, { type: "event_deleted", payload: { id: parentId, deleteAll: true } });
+    } else {
+      broadcastToUser(userId, { type: "event_deleted", payload: { id: params.id, deleteAll: false } });
+    }
     return { success: true };
   });

@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { query } from "../db";
 import { authGuard } from "./guard";
+import { broadcastToUser } from "../broadcast";
 
 export const inviteRoutes = new Elysia({ prefix: "/invites" })
   .use(authGuard)
@@ -49,6 +50,10 @@ export const inviteRoutes = new Elysia({ prefix: "/invites" })
       }
     }
 
+    broadcastToUser(userId, {
+      type: "invite_rsvp_updated",
+      payload: { id: params.id, rsvpStatus: status },
+    });
     return { success: true, rsvpStatus: status };
   }, {
     body: t.Object({
