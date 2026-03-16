@@ -3,16 +3,30 @@ import { query } from "../db";
 import { authGuard } from "./guard";
 import { sanitizeName, sanitizeNotes } from "../utils";
 
-export const profileRoutes = new Elysia({ prefix: "/profile" })
-  .use(authGuard)
-
-  .get("/", async ({ userId }) => {
+/** Fetch a user row, gracefully handling missing username_changed_at column */
+async function getUser(userId: string) {
+  try {
     const { rows } = await query(
       "SELECT username,name,about_me,profile_picture,username_changed_at FROM users WHERE id=$1",
       [userId]
     );
-    if (rows.length === 0) return { error: "User not found" };
-    const u = rows[0];
+    return rows[0] ?? null;
+  } catch {
+    // Column doesn't exist yet — fall back without it
+    const { rows } = await query(
+      "SELECT username,name,about_me,profile_picture FROM users WHERE id=$1",
+      [userId]
+    );
+    return rows[0] ? { ...rows[0], username_changed_at: null } : null;
+  }
+}
+
+export const profileRoutes = new Elysia({ prefix: "/profile" })
+  .use(authGuard)
+
+  .get("/", async ({ userId }) => {
+    const u = await getUser(userId);
+    if (!u) return { error: "User not found" };
     return {
       username: u.username,
       name: u.name,
@@ -24,24 +38,20 @@ export const profileRoutes = new Elysia({ prefix: "/profile" })
 
   .patch("/", async ({ userId, body, set }) => {
     const { username: rawUsername, name: rawName, aboutMe: rawAboutMe, profilePicture } = body;
-    const username = rawUsername !== undefined ? sanitizeName(rawUsername)  : undefined;
-    const name     = rawName     !== undefined ? sanitizeName(rawName)      : undefined;
-    const aboutMe  = rawAboutMe  !== undefined ? sanitizeNotes(rawAboutMe)  : undefined;
+    const username = rawUsername !== undefined ? sanitizeName(rawUsername) : undefined;
+    const name     = rawName     !== undefined ? sanitizeName(rawName)     : undefined;
+    const aboutMe  = rawAboutMe  !== undefined ? sanitizeNotes(rawAboutMe) : undefined;
     const sets: string[] = [];
     const params: any[] = [];
     let idx = 1;
 
     if (username !== undefined) {
-      // Enforce 30-day cooldown
-      const { rows: me } = await query(
-        "SELECT username, username_changed_at FROM users WHERE id=$1",
-        [userId]
-      );
-      const currentUsername = me[0]?.username;
-      const lastChanged: Date | null = me[0]?.username_changed_at ? new Date(me[0].username_changed_at) : null;
+      const u = await getUser(userId);
+      const currentUsername = u?.username ?? "";
+      const lastChanged: Date | null = u?.username_changed_at ? new Date(u.username_changed_at) : null;
 
-      // Only enforce cooldown if the username is actually changing
       if (username !== currentUsername) {
+        // Enforce 30-day cooldown
         if (lastChanged) {
           const daysSince = (Date.now() - lastChanged.getTime()) / (1000 * 60 * 60 * 24);
           if (daysSince < 30) {
@@ -62,9 +72,14 @@ export const profileRoutes = new Elysia({ prefix: "/profile" })
         }
 
         sets.push(`username=$${idx++}`); params.push(username);
-        sets.push(`username_changed_at=$${idx++}`); params.push(new Date().toISOString());
+        // Only set username_changed_at if the column exists
+        try {
+          await query("SELECT username_changed_at FROM users LIMIT 0");
+          sets.push(`username_changed_at=$${idx++}`); params.push(new Date().toISOString());
+        } catch { /* column not yet migrated — skip */ }
       }
     }
+
     if (name !== undefined) { sets.push(`name=$${idx++}`); params.push(name); }
     if (aboutMe !== undefined) { sets.push(`about_me=$${idx++}`); params.push(aboutMe); }
     if (profilePicture !== undefined) { sets.push(`profile_picture=$${idx++}`); params.push(profilePicture); }
@@ -74,17 +89,13 @@ export const profileRoutes = new Elysia({ prefix: "/profile" })
       await query(`UPDATE users SET ${sets.join(",")} WHERE id=$${idx}`, params);
     }
 
-    const { rows } = await query(
-      "SELECT username,name,about_me,profile_picture,username_changed_at FROM users WHERE id=$1",
-      [userId]
-    );
-    const u = rows[0];
+    const u = await getUser(userId);
     return {
-      username: u.username,
-      name: u.name,
-      aboutMe: u.about_me,
-      profilePicture: u.profile_picture,
-      usernameChangedAt: u.username_changed_at ?? null,
+      username: u?.username ?? "",
+      name: u?.name ?? "",
+      aboutMe: u?.about_me ?? "",
+      profilePicture: u?.profile_picture ?? "",
+      usernameChangedAt: u?.username_changed_at ?? null,
     };
   }, {
     body: t.Object({
