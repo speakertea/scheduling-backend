@@ -1,7 +1,7 @@
 import { Elysia, t } from "elysia";
 import bcrypt from "bcryptjs";
 import { Resend } from "resend";
-import { query, seedUserData, generateReferralCode } from "../db";
+import { query, generateReferralCode } from "../db";
 import { signToken, verifyToken } from "../auth";
 import { sanitizeName, sanitizeEmail } from "../utils";
 
@@ -185,8 +185,6 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
         await query("UPDATE users SET referred_by = $1 WHERE id = $2", [referrers[0].id, id]);
       }
     }
-
-    await seedUserData(id);
 
     const token = signToken(id);
     set.status = 201;
