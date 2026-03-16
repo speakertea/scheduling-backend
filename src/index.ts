@@ -19,7 +19,7 @@ const PORT = Number(process.env.PORT) || 3000;
 
 await createTables();
 
-const app = new Elysia()
+const app = new Elysia({ serve: { maxRequestBodySize: 10 * 1024 * 1024 } })
   .use(cors())
   .use(rateLimiter)
 
