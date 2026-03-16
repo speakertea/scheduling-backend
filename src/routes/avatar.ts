@@ -52,7 +52,7 @@ export const avatarRoutes = new Elysia({ prefix: "/profile" })
         })
       );
     } catch (err: any) {
-      console.error("[avatar] R2 upload failed:", err.message);
+      console.error("[avatar] R2 upload failed:", err.name, err.message, err.$metadata ?? "");
       set.status = 500;
       return { error: "Failed to upload image. Please try again." };
     }
