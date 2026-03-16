@@ -40,6 +40,10 @@ export async function createTables() {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_disabled BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT;
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
+
+    DO $$ BEGIN
       ALTER TABLE users ADD COLUMN IF NOT EXISTS username_changed_at TIMESTAMPTZ;
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
