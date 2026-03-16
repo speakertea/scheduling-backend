@@ -14,6 +14,7 @@ import { groupRoutes, friendRoutes, notificationRoutes } from "./routes/misc";
 import { adminRoutes } from "./routes/admin";
 import { pushRoutes } from "./routes/push";
 import { avatarRoutes } from "./routes/avatar";
+import { referralRoutes } from "./routes/referrals";
 import { verifyToken } from "./auth";
 import { addConnection, removeConnection } from "./broadcast";
 
@@ -53,6 +54,7 @@ const app = new Elysia({ serve: { maxRequestBodySize: 10 * 1024 * 1024 } })
       .use(adminRoutes)
       .use(pushRoutes)
       .use(avatarRoutes)
+      .use(referralRoutes)
       .ws("/ws", {
         query: t.Object({ token: t.Optional(t.String()) }),
         open(ws) {

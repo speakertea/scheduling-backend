@@ -1,7 +1,7 @@
 import { Elysia, t } from "elysia";
 import bcrypt from "bcryptjs";
 import { Resend } from "resend";
-import { query, seedUserData } from "../db";
+import { query, seedUserData, generateReferralCode } from "../db";
 import { signToken, verifyToken } from "../auth";
 import { sanitizeName, sanitizeEmail } from "../utils";
 
@@ -113,7 +113,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
    * - Returns JWT token
    */
   .post("/register/verify", async ({ body, set }) => {
-    const { email, code } = body;
+    const { email, code, referralCode } = body;
     const cleanEmail = email.toLowerCase().trim();
 
     // Find the most recent unused code for this email
@@ -168,6 +168,24 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
       "INSERT INTO users (id, email, password_hash, username, name) VALUES ($1, $2, $3, $4, $5)",
       [id, cleanEmail, record.password_hash, username, record.name || ""]
     );
+
+    // Generate and assign a unique referral_code for the new user
+    let newReferralCode = generateReferralCode();
+    while (true) {
+      const { rows: clash } = await query("SELECT id FROM users WHERE referral_code = $1", [newReferralCode]);
+      if (clash.length === 0) break;
+      newReferralCode = generateReferralCode();
+    }
+    await query("UPDATE users SET referral_code = $1 WHERE id = $2", [newReferralCode, id]);
+
+    // If a referral code was provided, look up the referrer and set referred_by
+    if (referralCode) {
+      const { rows: referrers } = await query("SELECT id FROM users WHERE referral_code = $1", [referralCode.toLowerCase().trim()]);
+      if (referrers.length > 0) {
+        await query("UPDATE users SET referred_by = $1 WHERE id = $2", [referrers[0].id, id]);
+      }
+    }
+
     await seedUserData(id);
 
     const token = signToken(id);
@@ -177,6 +195,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     body: t.Object({
       email: t.String(),
       code: t.String(),
+      referralCode: t.Optional(t.String()),
     }),
   })
 

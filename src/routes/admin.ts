@@ -255,6 +255,36 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
     };
   })
 
+  /* Referral analytics */
+  .get("/analytics/referrals", async () => {
+    const [topReferrersResult, totalUsersResult, totalReferredResult, totalOrganicResult] = await Promise.all([
+      query(`
+        SELECT u.name, u.username, u.referral_code as "referralCode", COUNT(r.id)::int as "referredCount"
+        FROM users u
+        LEFT JOIN users r ON r.referred_by = u.id
+        GROUP BY u.id, u.name, u.username, u.referral_code
+        ORDER BY "referredCount" DESC
+        LIMIT 10
+      `),
+      query("SELECT COUNT(*)::int as c FROM users"),
+      query("SELECT COUNT(*)::int as c FROM users WHERE referred_by IS NOT NULL"),
+      query("SELECT COUNT(*)::int as c FROM users WHERE referred_by IS NULL"),
+    ]);
+
+    const totalUsers = totalUsersResult.rows[0].c;
+    const totalReferred = totalReferredResult.rows[0].c;
+    const totalOrganic = totalOrganicResult.rows[0].c;
+    const referralRate = totalUsers > 0 ? totalReferred / totalUsers : 0;
+
+    return {
+      topReferrers: topReferrersResult.rows,
+      totalUsers,
+      totalReferred,
+      totalOrganic,
+      referralRate,
+    };
+  })
+
   /* ═══════════════════════════════════════════════════════
      TIER 3: System Health & Audit
      ═══════════════════════════════════════════════════════ */

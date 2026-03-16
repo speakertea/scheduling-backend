@@ -13,6 +13,16 @@ export async function query(sql: string, params?: any[]) {
   return getPool().query(sql, params);
 }
 
+/** Generates an 8-character lowercase alphanumeric referral code */
+export function generateReferralCode(): string {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let code = "";
+  for (let i = 0; i < 8; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Schema                                                             */
 /* ------------------------------------------------------------------ */
@@ -51,6 +61,12 @@ export async function createTables() {
     DO $$ BEGIN
       ALTER TABLE users ADD CONSTRAINT users_username_unique UNIQUE (username);
     EXCEPTION WHEN duplicate_table THEN NULL;
+    END $$;
+
+    DO $$ BEGIN
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by TEXT REFERENCES users(id);
+    EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
 
     CREATE TABLE IF NOT EXISTS events (
@@ -181,6 +197,19 @@ export async function createTables() {
     );
     CREATE INDEX IF NOT EXISTS idx_api_logs_created ON api_request_logs(created_at DESC);
   `);
+
+  // Backfill referral_code for any users that don't have one yet
+  const { rows: usersWithoutCode } = await query("SELECT id FROM users WHERE referral_code IS NULL");
+  for (const u of usersWithoutCode) {
+    let code = generateReferralCode();
+    // Retry on collision
+    while (true) {
+      const { rows: clash } = await query("SELECT id FROM users WHERE referral_code = $1", [code]);
+      if (clash.length === 0) break;
+      code = generateReferralCode();
+    }
+    await query("UPDATE users SET referral_code = $1 WHERE id = $2", [code, u.id]);
+  }
 }
 
 /* ------------------------------------------------------------------ */
