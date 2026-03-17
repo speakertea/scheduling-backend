@@ -1,9 +1,22 @@
 import { Elysia, t } from "elysia";
 import bcrypt from "bcryptjs";
 import { Resend } from "resend";
-import { query, generateReferralCode } from "../db";
+import { query, generateReferralCode, updateUserLocation } from "../db";
 import { signToken, verifyToken } from "../auth";
 import { sanitizeName, sanitizeEmail } from "../utils";
+import { lookupIP } from "../geo";
+
+/** Extract client IP from request headers (Render sets x-forwarded-for) */
+function extractIP(headers: Record<string, string | undefined>): string {
+  return headers["x-forwarded-for"]?.split(",")[0]?.trim() || "unknown";
+}
+
+/** Fire-and-forget geo lookup + DB update */
+function backgroundGeoUpdate(userId: string, ip: string) {
+  lookupIP(ip).then((geo) => {
+    if (geo) updateUserLocation(userId, geo, ip);
+  }).catch(() => {});
+}
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -112,7 +125,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
    * - Creates the user
    * - Returns JWT token
    */
-  .post("/register/verify", async ({ body, set }) => {
+  .post("/register/verify", async ({ body, set, headers }) => {
     const { email, code, referralCode } = body;
     const cleanEmail = email.toLowerCase().trim();
 
@@ -187,6 +200,11 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     }
 
     const token = signToken(id);
+
+    // Fire-and-forget geo lookup
+    const ip = extractIP(headers);
+    backgroundGeoUpdate(id, ip);
+
     set.status = 201;
     return { token, user: { id, email: cleanEmail, username, name: record.name || "" } };
   }, {
@@ -253,8 +271,8 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     }),
   })
 
-  /* Login — unchanged */
-  .post("/login", async ({ body, set }) => {
+  /* Login */
+  .post("/login", async ({ body, set, headers }) => {
     const { email, password } = body;
     const { rows } = await query(
       "SELECT id,email,password_hash,username,name FROM users WHERE email = $1",
@@ -265,6 +283,11 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
       return { error: "Invalid email or password" };
     }
     const u = rows[0];
+
+    // Fire-and-forget geo lookup
+    const ip = extractIP(headers);
+    backgroundGeoUpdate(u.id, ip);
+
     return { token: signToken(u.id), user: { id: u.id, email: u.email, username: u.username, name: u.name } };
   }, {
     body: t.Object({

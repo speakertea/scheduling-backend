@@ -285,6 +285,54 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
     };
   })
 
+  /* Geography analytics */
+  .get("/analytics/geography", async () => {
+    const [cities, regions, countries, located, unlocated] = await Promise.all([
+      query(`
+        SELECT city, region, country, latitude, longitude, COUNT(*)::int as user_count
+        FROM users WHERE city IS NOT NULL
+        GROUP BY city, region, country, latitude, longitude
+        ORDER BY user_count DESC
+      `),
+      query(`
+        SELECT region, country, COUNT(*)::int as user_count
+        FROM users WHERE region IS NOT NULL
+        GROUP BY region, country
+        ORDER BY user_count DESC
+      `),
+      query(`
+        SELECT country, COUNT(*)::int as user_count
+        FROM users WHERE country IS NOT NULL
+        GROUP BY country
+        ORDER BY user_count DESC
+      `),
+      query("SELECT COUNT(*)::int as c FROM users WHERE city IS NOT NULL"),
+      query("SELECT COUNT(*)::int as c FROM users WHERE city IS NULL"),
+    ]);
+
+    return {
+      cities: cities.rows.map((r: any) => ({
+        city: r.city,
+        region: r.region,
+        country: r.country,
+        latitude: r.latitude,
+        longitude: r.longitude,
+        userCount: r.user_count,
+      })),
+      regions: regions.rows.map((r: any) => ({
+        region: r.region,
+        country: r.country,
+        userCount: r.user_count,
+      })),
+      countries: countries.rows.map((r: any) => ({
+        country: r.country,
+        userCount: r.user_count,
+      })),
+      totalLocated: located.rows[0].c,
+      totalUnlocated: unlocated.rows[0].c,
+    };
+  })
+
   /* ═══════════════════════════════════════════════════════
      TIER 3: System Health & Audit
      ═══════════════════════════════════════════════════════ */

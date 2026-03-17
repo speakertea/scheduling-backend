@@ -59,6 +59,17 @@ export async function createTables() {
     END $$;
 
     DO $$ BEGIN
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS region TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS country TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS latitude FLOAT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS longitude FLOAT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS last_ip TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS location_updated_at TIMESTAMPTZ;
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
+
+    DO $$ BEGIN
       ALTER TABLE users ADD CONSTRAINT users_username_unique UNIQUE (username);
     EXCEPTION WHEN duplicate_table THEN NULL;
     END $$;
@@ -257,6 +268,13 @@ export async function updateLastActive(userId: string) {
 export async function makeAdmin(email: string) {
   const result = await query("UPDATE users SET is_admin = TRUE WHERE email = $1", [email.toLowerCase().trim()]);
   return (result.rowCount ?? 0) > 0;
+}
+
+export async function updateUserLocation(userId: string, geo: { city: string | null; region: string | null; country: string | null; latitude: number | null; longitude: number | null }, ip: string) {
+  await query(
+    "UPDATE users SET city=$1, region=$2, country=$3, latitude=$4, longitude=$5, last_ip=$6, location_updated_at=NOW() WHERE id=$7",
+    [geo.city, geo.region, geo.country, geo.latitude, geo.longitude, ip, userId]
+  );
 }
 
 export async function logApiRequest(method: string, path: string, statusCode: number, responseMs: number, userId?: string) {
