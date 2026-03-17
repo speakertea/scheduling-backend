@@ -429,6 +429,7 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
   /* Create sponsored event */
   .post("/sponsored-events", async ({ body, userId, set }) => {
     try {
+      if (!userId) { set.status = 401; return { error: "Not authenticated" }; }
       const id = crypto.randomUUID();
       const b = body as any;
       const title = b.title;

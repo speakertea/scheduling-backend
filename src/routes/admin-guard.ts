@@ -6,7 +6,7 @@ import { query, updateLastActive } from "../db";
  * Admin guard: verifies JWT, checks is_admin flag, updates last_active.
  */
 export const adminGuard = new Elysia({ name: "adminGuard" })
-  .resolve(async ({ headers, set }) => {
+  .resolve({ as: "scoped" }, async ({ headers, set }) => {
     const token = (headers.authorization || "").replace("Bearer ", "");
     if (!token) {
       set.status = 401;
@@ -34,7 +34,7 @@ export const adminGuard = new Elysia({ name: "adminGuard" })
       return { userId: null as string | null, authError: "Invalid or expired token" };
     }
   })
-  .onBeforeHandle(({ userId, authError, set }) => {
+  .onBeforeHandle({ as: "scoped" }, ({ userId, authError, set }) => {
     if (authError) {
       set.status = set.status && set.status >= 400 ? set.status : 401;
       return { error: authError };
