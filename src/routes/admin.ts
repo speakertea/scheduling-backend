@@ -428,54 +428,73 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
 
   /* Create sponsored event */
   .post("/sponsored-events", async ({ body, userId, set }) => {
-    const id = crypto.randomUUID();
-    const {
-      title, description, sponsorName, location, eventUrl,
-      startAt, endAt, targetCities, targetRegions, targetAll, scheduledSendAt,
-    } = body as any;
+    try {
+      const id = crypto.randomUUID();
+      const b = body as any;
+      const title = b.title;
+      const description = b.description || null;
+      const sponsorName = b.sponsorName || b.sponsor_name || null;
+      const location = b.location || null;
+      const eventUrl = b.eventUrl || b.event_url || null;
+      const startAt = b.startAt || b.start_at;
+      const endAt = b.endAt || b.end_at;
+      const targetCities = b.targetCities || b.target_cities || [];
+      const targetRegions = b.targetRegions || b.target_regions || [];
+      const targetAll = b.targetAll ?? b.target_all ?? false;
+      const scheduledSendAt = b.scheduledSendAt || b.scheduled_send_at || null;
 
-    const now = new Date();
-    let status = "draft";
-    if (scheduledSendAt && new Date(scheduledSendAt) > now) {
-      status = "scheduled";
+      if (!title || !startAt || !endAt) {
+        set.status = 400;
+        return { error: "title, startAt, and endAt are required" };
+      }
+
+      const now = new Date();
+      let status = "draft";
+      if (scheduledSendAt && new Date(scheduledSendAt) > now) {
+        status = "scheduled";
+      }
+
+      // Calculate total_targeted
+      let where = "push_token IS NOT NULL";
+      const params: any[] = [];
+      let idx = 1;
+      if (targetAll) {
+        // no extra filter
+      } else {
+        const conditions: string[] = [];
+        if (targetCities?.length > 0) {
+          conditions.push(`city = ANY($${idx})`);
+          params.push(targetCities);
+          idx++;
+        }
+        if (targetRegions?.length > 0) {
+          conditions.push(`region = ANY($${idx})`);
+          params.push(targetRegions);
+          idx++;
+        }
+        if (conditions.length > 0) {
+          where += ` AND (${conditions.join(" OR ")})`;
+        }
+      }
+      const { rows: countRows } = await query(`SELECT COUNT(*)::int as c FROM users WHERE ${where}`, params);
+      const totalTargeted = countRows[0].c;
+
+      await query(
+        `INSERT INTO sponsored_events (id, title, description, sponsor_name, location, event_url, start_at, end_at, target_cities, target_regions, target_all, status, scheduled_send_at, total_targeted, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+        [id, title, description, sponsorName, location, eventUrl, startAt, endAt,
+         targetCities, targetRegions, targetAll, status, scheduledSendAt, totalTargeted, userId]
+      );
+
+      await logAudit(userId!, "create_sponsored_event", id, `"${title}" targeting ${totalTargeted} users`);
+
+      set.status = 201;
+      return { id, status, totalTargeted };
+    } catch (err: any) {
+      console.error("[sponsored-create]", err);
+      set.status = 500;
+      return { error: err.message || "Internal server error" };
     }
-
-    // Calculate total_targeted
-    let where = "push_token IS NOT NULL";
-    const params: any[] = [];
-    let idx = 1;
-    if (targetAll) {
-      // no extra filter
-    } else {
-      const conditions: string[] = [];
-      if (targetCities?.length > 0) {
-        conditions.push(`city = ANY($${idx})`);
-        params.push(targetCities);
-        idx++;
-      }
-      if (targetRegions?.length > 0) {
-        conditions.push(`region = ANY($${idx})`);
-        params.push(targetRegions);
-        idx++;
-      }
-      if (conditions.length > 0) {
-        where += ` AND (${conditions.join(" OR ")})`;
-      }
-    }
-    const { rows: countRows } = await query(`SELECT COUNT(*)::int as c FROM users WHERE ${where}`, params);
-    const totalTargeted = countRows[0].c;
-
-    await query(
-      `INSERT INTO sponsored_events (id, title, description, sponsor_name, location, event_url, start_at, end_at, target_cities, target_regions, target_all, status, scheduled_send_at, total_targeted, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-      [id, title, description || null, sponsorName || null, location || null, eventUrl || null, startAt, endAt,
-       targetCities || [], targetRegions || [], targetAll || false, status, scheduledSendAt || null, totalTargeted, userId]
-    );
-
-    await logAudit(userId!, "create_sponsored_event", id, `"${title}" targeting ${totalTargeted} users`);
-
-    set.status = 201;
-    return { id, status, totalTargeted };
   })
 
   /* List sponsored events */
