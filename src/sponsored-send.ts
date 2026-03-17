@@ -1,13 +1,13 @@
 import { query } from "./db";
 
 /**
- * Sends push notifications for a sponsored event to all targeted users.
- * Used by both the admin /send endpoint and the scheduled sender.
- * Returns the number of successfully sent notifications.
+ * Delivers a sponsored event to all targeted users and sends push
+ * notifications to those who have a push token.
+ * Returns the number of successfully sent push notifications.
  */
 export async function sendSponsoredEvent(event: any): Promise<number> {
-  // Build targeting query
-  let where = "push_token IS NOT NULL";
+  // Build targeting query — target ALL matching users, not just those with push tokens
+  let where = "1=1";
   const params: any[] = [];
   let idx = 1;
 
@@ -35,9 +35,9 @@ export async function sendSponsoredEvent(event: any): Promise<number> {
     }
   }
 
-  const { rows: users } = await query(`SELECT id, push_token FROM users WHERE ${where}`, params);
+  const { rows: allUsers } = await query(`SELECT id, push_token FROM users WHERE ${where}`, params);
 
-  if (users.length === 0) {
+  if (allUsers.length === 0) {
     await query(
       "UPDATE sponsored_events SET status = 'sent', sent_at = NOW(), total_sent = 0 WHERE id = $1",
       [event.id]
@@ -45,11 +45,11 @@ export async function sendSponsoredEvent(event: any): Promise<number> {
     return 0;
   }
 
-  // Create delivery records
+  // Create delivery records for ALL targeted users (regardless of push token)
   const deliveryValues: string[] = [];
   const deliveryParams: any[] = [];
   let dIdx = 1;
-  for (const u of users) {
+  for (const u of allUsers) {
     const did = crypto.randomUUID();
     deliveryValues.push(`($${dIdx}, $${dIdx + 1}, $${dIdx + 2}, TRUE, NOW())`);
     deliveryParams.push(did, event.id, u.id);
@@ -68,9 +68,10 @@ export async function sendSponsoredEvent(event: any): Promise<number> {
     );
   }
 
-  // Build push messages
+  // Send push notifications only to users WITH a push token
+  const pushUsers = allUsers.filter((u: any) => u.push_token);
   const title = event.sponsor_name ? `Collabo + ${event.sponsor_name}` : "Collabo";
-  const messages = users.map((u: any) => ({
+  const messages = pushUsers.map((u: any) => ({
     to: u.push_token,
     title,
     body: event.title,
@@ -78,8 +79,7 @@ export async function sendSponsoredEvent(event: any): Promise<number> {
     data: { type: "sponsored_event", sponsoredEventId: event.id },
   }));
 
-  // Send in batches of 100 (Expo's limit)
-  let totalSent = 0;
+  let totalPushed = 0;
   for (let i = 0; i < messages.length; i += 100) {
     const batch = messages.slice(i, i + 100);
     try {
@@ -93,7 +93,7 @@ export async function sendSponsoredEvent(event: any): Promise<number> {
         body: JSON.stringify(batch),
       });
       if (res.ok) {
-        totalSent += batch.length;
+        totalPushed += batch.length;
       } else {
         console.error("[sponsored-push] Expo API error:", res.status, await res.text());
       }
@@ -102,11 +102,12 @@ export async function sendSponsoredEvent(event: any): Promise<number> {
     }
   }
 
-  // Update the sponsored event
+  // Update the sponsored event — total_sent = all delivered users, not just pushed
   await query(
     "UPDATE sponsored_events SET status = 'sent', sent_at = NOW(), total_sent = $1 WHERE id = $2",
-    [totalSent, event.id]
+    [allUsers.length, event.id]
   );
 
-  return totalSent;
+  console.log(`[sponsored-send] Event ${event.id}: delivered to ${allUsers.length} users, pushed to ${totalPushed}`);
+  return allUsers.length;
 }

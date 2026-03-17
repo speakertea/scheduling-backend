@@ -390,7 +390,7 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
     const regions = qs.regions ? qs.regions.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
     const all = qs.all === "true";
 
-    let where = "push_token IS NOT NULL";
+    let where = "1=1";
     const params: any[] = [];
     let idx = 1;
 
@@ -456,7 +456,7 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
       }
 
       // Calculate total_targeted
-      let where = "push_token IS NOT NULL";
+      let where = "1=1";
       const params: any[] = [];
       let idx = 1;
       if (targetAll) {
