@@ -234,6 +234,50 @@ export async function createTables() {
       joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE(group_id, user_id)
     );
+
+    CREATE TABLE IF NOT EXISTS sponsored_events (
+      id                TEXT PRIMARY KEY,
+      title             TEXT NOT NULL,
+      description       TEXT,
+      sponsor_name      TEXT,
+      location          TEXT,
+      event_url         TEXT,
+      start_at          TEXT NOT NULL,
+      end_at            TEXT NOT NULL,
+      target_cities     TEXT[],
+      target_regions    TEXT[],
+      target_all        BOOLEAN NOT NULL DEFAULT FALSE,
+      status            TEXT NOT NULL CHECK(status IN ('draft','scheduled','sent','cancelled')) DEFAULT 'draft',
+      scheduled_send_at TIMESTAMPTZ,
+      sent_at           TIMESTAMPTZ,
+      total_targeted    INTEGER NOT NULL DEFAULT 0,
+      total_sent        INTEGER NOT NULL DEFAULT 0,
+      total_opened      INTEGER NOT NULL DEFAULT 0,
+      total_rsvp        INTEGER NOT NULL DEFAULT 0,
+      created_by        TEXT NOT NULL REFERENCES users(id),
+      created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_sponsored_status ON sponsored_events(status);
+
+    CREATE TABLE IF NOT EXISTS sponsored_event_rsvps (
+      id                 TEXT PRIMARY KEY,
+      sponsored_event_id TEXT NOT NULL REFERENCES sponsored_events(id) ON DELETE CASCADE,
+      user_id            TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      rsvp_status        TEXT NOT NULL CHECK(rsvp_status IN ('going','interested','not_going')) DEFAULT 'interested',
+      created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(sponsored_event_id, user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS sponsored_event_deliveries (
+      id                 TEXT PRIMARY KEY,
+      sponsored_event_id TEXT NOT NULL REFERENCES sponsored_events(id) ON DELETE CASCADE,
+      user_id            TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      delivered          BOOLEAN NOT NULL DEFAULT FALSE,
+      opened             BOOLEAN NOT NULL DEFAULT FALSE,
+      delivered_at       TIMESTAMPTZ,
+      opened_at          TIMESTAMPTZ,
+      UNIQUE(sponsored_event_id, user_id)
+    );
   `);
 
   // Backfill referral_code for any users that don't have one yet

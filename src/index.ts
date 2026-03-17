@@ -16,6 +16,9 @@ import { pushRoutes } from "./routes/push";
 import { avatarRoutes } from "./routes/avatar";
 import { referralRoutes } from "./routes/referrals";
 import { peopleRoutes } from "./routes/people";
+import { sponsoredRoutes } from "./routes/sponsored";
+import { query as dbQuery } from "./db";
+import { sendSponsoredEvent } from "./sponsored-send";
 import { verifyToken } from "./auth";
 import { addConnection, removeConnection } from "./broadcast";
 
@@ -57,6 +60,7 @@ const app = new Elysia({ serve: { maxRequestBodySize: 10 * 1024 * 1024 } })
       .use(avatarRoutes)
       .use(referralRoutes)
       .use(peopleRoutes)
+      .use(sponsoredRoutes)
       .ws("/ws", {
         query: t.Object({ token: t.Optional(t.String()) }),
         open(ws) {
@@ -81,6 +85,21 @@ const app = new Elysia({ serve: { maxRequestBodySize: 10 * 1024 * 1024 } })
 
 // Check for upcoming events and push notify every 5 minutes
 setInterval(() => { checkAndSendNotifications().catch(console.error); }, 5 * 60_000);
+
+// Check for scheduled sponsored events every 60 seconds
+setInterval(async () => {
+  try {
+    const { rows } = await dbQuery(
+      "SELECT * FROM sponsored_events WHERE status = 'scheduled' AND scheduled_send_at <= NOW()"
+    );
+    for (const event of rows) {
+      await sendSponsoredEvent(event);
+      console.log(`[sponsored-scheduler] Sent sponsored event ${event.id} (${event.title})`);
+    }
+  } catch (err: any) {
+    console.error("[sponsored-scheduler] Error:", err.message);
+  }
+}, 60_000);
 
 console.log(`
   🦊 Scheduling App API (Elysia + Bun)

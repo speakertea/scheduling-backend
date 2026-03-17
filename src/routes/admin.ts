@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import bcrypt from "bcryptjs";
 import { query, logAudit } from "../db";
 import { adminGuard } from "./admin-guard";
+import { sendSponsoredEvent } from "../sponsored-send";
 
 export const adminRoutes = new Elysia({ prefix: "/admin" })
   .use(adminGuard)
@@ -377,6 +378,250 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
       [limit]
     );
     return rows;
+  })
+
+  /* ═══════════════════════════════════════════════════════
+     SPONSORED EVENTS
+     ═══════════════════════════════════════════════════════ */
+
+  /* Preview reach for a targeting config */
+  .get("/sponsored-events/preview-reach", async ({ query: qs }) => {
+    const cities = qs.cities ? qs.cities.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
+    const regions = qs.regions ? qs.regions.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
+    const all = qs.all === "true";
+
+    let where = "push_token IS NOT NULL";
+    const params: any[] = [];
+    let idx = 1;
+
+    if (all) {
+      // no extra filter
+    } else {
+      const conditions: string[] = [];
+      if (cities.length > 0) {
+        conditions.push(`city = ANY($${idx})`);
+        params.push(cities);
+        idx++;
+      }
+      if (regions.length > 0) {
+        conditions.push(`region = ANY($${idx})`);
+        params.push(regions);
+        idx++;
+      }
+      if (conditions.length === 0) {
+        return { totalReach: 0, breakdown: [] };
+      }
+      where += ` AND (${conditions.join(" OR ")})`;
+    }
+
+    const { rows: total } = await query(`SELECT COUNT(*)::int as c FROM users WHERE ${where}`, params);
+    const { rows: breakdown } = await query(
+      `SELECT city, COUNT(*)::int as count FROM users WHERE ${where} AND city IS NOT NULL GROUP BY city ORDER BY count DESC`,
+      params
+    );
+
+    return {
+      totalReach: total[0].c,
+      breakdown: breakdown.map((r: any) => ({ city: r.city, count: r.count })),
+    };
+  })
+
+  /* Create sponsored event */
+  .post("/sponsored-events", async ({ body, userId, set }) => {
+    const id = crypto.randomUUID();
+    const {
+      title, description, sponsorName, location, eventUrl,
+      startAt, endAt, targetCities, targetRegions, targetAll, scheduledSendAt,
+    } = body as any;
+
+    const now = new Date();
+    let status = "draft";
+    if (scheduledSendAt && new Date(scheduledSendAt) > now) {
+      status = "scheduled";
+    }
+
+    // Calculate total_targeted
+    let where = "push_token IS NOT NULL";
+    const params: any[] = [];
+    let idx = 1;
+    if (targetAll) {
+      // no extra filter
+    } else {
+      const conditions: string[] = [];
+      if (targetCities?.length > 0) {
+        conditions.push(`city = ANY($${idx})`);
+        params.push(targetCities);
+        idx++;
+      }
+      if (targetRegions?.length > 0) {
+        conditions.push(`region = ANY($${idx})`);
+        params.push(targetRegions);
+        idx++;
+      }
+      if (conditions.length > 0) {
+        where += ` AND (${conditions.join(" OR ")})`;
+      }
+    }
+    const { rows: countRows } = await query(`SELECT COUNT(*)::int as c FROM users WHERE ${where}`, params);
+    const totalTargeted = countRows[0].c;
+
+    await query(
+      `INSERT INTO sponsored_events (id, title, description, sponsor_name, location, event_url, start_at, end_at, target_cities, target_regions, target_all, status, scheduled_send_at, total_targeted, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [id, title, description || null, sponsorName || null, location || null, eventUrl || null, startAt, endAt,
+       targetCities || [], targetRegions || [], targetAll || false, status, scheduledSendAt || null, totalTargeted, userId]
+    );
+
+    await logAudit(userId!, "create_sponsored_event", id, `"${title}" targeting ${totalTargeted} users`);
+
+    set.status = 201;
+    return { id, status, totalTargeted };
+  })
+
+  /* List sponsored events */
+  .get("/sponsored-events", async () => {
+    const { rows } = await query(`
+      SELECT se.*,
+        (SELECT COUNT(*)::int FROM sponsored_event_rsvps WHERE sponsored_event_id = se.id AND rsvp_status = 'going') as going_count,
+        (SELECT COUNT(*)::int FROM sponsored_event_rsvps WHERE sponsored_event_id = se.id AND rsvp_status = 'interested') as interested_count
+      FROM sponsored_events se
+      ORDER BY se.created_at DESC
+    `);
+
+    return rows.map((r: any) => ({
+      id: r.id,
+      title: r.title,
+      description: r.description,
+      sponsorName: r.sponsor_name,
+      location: r.location,
+      eventUrl: r.event_url,
+      startAt: r.start_at,
+      endAt: r.end_at,
+      targetCities: r.target_cities,
+      targetRegions: r.target_regions,
+      targetAll: r.target_all,
+      status: r.status,
+      scheduledSendAt: r.scheduled_send_at,
+      sentAt: r.sent_at,
+      totalTargeted: r.total_targeted,
+      totalSent: r.total_sent,
+      totalOpened: r.total_opened,
+      totalRsvp: r.total_rsvp,
+      goingCount: r.going_count,
+      interestedCount: r.interested_count,
+      createdAt: r.created_at,
+    }));
+  })
+
+  /* Sponsored event detail */
+  .get("/sponsored-events/:id", async ({ params, set }) => {
+    const { rows } = await query("SELECT * FROM sponsored_events WHERE id = $1", [params.id]);
+    if (rows.length === 0) { set.status = 404; return { error: "Not found" }; }
+    const e = rows[0];
+
+    const { rows: rsvps } = await query(`
+      SELECT rsvp_status, COUNT(*)::int as count
+      FROM sponsored_event_rsvps WHERE sponsored_event_id = $1
+      GROUP BY rsvp_status
+    `, [params.id]);
+
+    const { rows: deliveryStats } = await query(`
+      SELECT COUNT(*)::int as total,
+        COUNT(CASE WHEN delivered THEN 1 END)::int as delivered,
+        COUNT(CASE WHEN opened THEN 1 END)::int as opened
+      FROM sponsored_event_deliveries WHERE sponsored_event_id = $1
+    `, [params.id]);
+
+    const rsvpBreakdown: Record<string, number> = {};
+    for (const r of rsvps) rsvpBreakdown[r.rsvp_status] = r.count;
+
+    return {
+      id: e.id, title: e.title, description: e.description,
+      sponsorName: e.sponsor_name, location: e.location, eventUrl: e.event_url,
+      startAt: e.start_at, endAt: e.end_at,
+      targetCities: e.target_cities, targetRegions: e.target_regions, targetAll: e.target_all,
+      status: e.status, scheduledSendAt: e.scheduled_send_at, sentAt: e.sent_at,
+      totalTargeted: e.total_targeted, totalSent: e.total_sent,
+      totalOpened: e.total_opened, totalRsvp: e.total_rsvp,
+      createdAt: e.created_at,
+      rsvpBreakdown,
+      delivery: deliveryStats.rows?.[0] || deliveryStats[0] || { total: 0, delivered: 0, opened: 0 },
+    };
+  })
+
+  /* Update sponsored event (draft/scheduled only) */
+  .patch("/sponsored-events/:id", async ({ params, body, set }) => {
+    const { rows } = await query("SELECT status FROM sponsored_events WHERE id = $1", [params.id]);
+    if (rows.length === 0) { set.status = 404; return { error: "Not found" }; }
+    if (rows[0].status === "sent") { set.status = 400; return { error: "Cannot update a sent event" }; }
+
+    const b = body as any;
+    const fields: string[] = [];
+    const vals: any[] = [];
+    let idx = 1;
+
+    const allowed = ["title", "description", "location", "eventUrl", "startAt", "endAt", "sponsorName", "targetAll", "scheduledSendAt"];
+    const colMap: Record<string, string> = {
+      title: "title", description: "description", location: "location",
+      eventUrl: "event_url", startAt: "start_at", endAt: "end_at",
+      sponsorName: "sponsor_name", targetAll: "target_all", scheduledSendAt: "scheduled_send_at",
+    };
+
+    for (const key of allowed) {
+      if (b[key] !== undefined) {
+        fields.push(`${colMap[key]} = $${idx}`);
+        vals.push(b[key]);
+        idx++;
+      }
+    }
+    if (b.targetCities !== undefined) { fields.push(`target_cities = $${idx}`); vals.push(b.targetCities); idx++; }
+    if (b.targetRegions !== undefined) { fields.push(`target_regions = $${idx}`); vals.push(b.targetRegions); idx++; }
+
+    // Recalculate status
+    if (b.scheduledSendAt !== undefined) {
+      const sendAt = b.scheduledSendAt ? new Date(b.scheduledSendAt) : null;
+      const newStatus = sendAt && sendAt > new Date() ? "scheduled" : "draft";
+      fields.push(`status = $${idx}`); vals.push(newStatus); idx++;
+    }
+
+    if (fields.length === 0) return { success: true };
+
+    vals.push(params.id);
+    await query(`UPDATE sponsored_events SET ${fields.join(", ")} WHERE id = $${idx}`, vals);
+    return { success: true };
+  })
+
+  /* Delete sponsored event (not sent) */
+  .delete("/sponsored-events/:id", async ({ params, userId, set }) => {
+    const { rows } = await query("SELECT status, title FROM sponsored_events WHERE id = $1", [params.id]);
+    if (rows.length === 0) { set.status = 404; return { error: "Not found" }; }
+    if (rows[0].status === "sent") { set.status = 400; return { error: "Cannot delete a sent event. Cancel it instead." }; }
+
+    await query("DELETE FROM sponsored_events WHERE id = $1", [params.id]);
+    await logAudit(userId!, "delete_sponsored_event", params.id, `Deleted "${rows[0].title}"`);
+    return { success: true };
+  })
+
+  /* Send sponsored event NOW */
+  .post("/sponsored-events/:id/send", async ({ params, userId, set }) => {
+    const { rows } = await query("SELECT * FROM sponsored_events WHERE id = $1", [params.id]);
+    if (rows.length === 0) { set.status = 404; return { error: "Not found" }; }
+    if (rows[0].status === "sent") { set.status = 400; return { error: "Already sent" }; }
+    if (rows[0].status === "cancelled") { set.status = 400; return { error: "Event is cancelled" }; }
+
+    const totalSent = await sendSponsoredEvent(rows[0]);
+    await logAudit(userId!, "send_sponsored_event", params.id, `Sent to ${totalSent} users`);
+    return { success: true, totalSent };
+  })
+
+  /* Cancel sponsored event */
+  .post("/sponsored-events/:id/cancel", async ({ params, userId, set }) => {
+    const { rows } = await query("SELECT status, title FROM sponsored_events WHERE id = $1", [params.id]);
+    if (rows.length === 0) { set.status = 404; return { error: "Not found" }; }
+
+    await query("UPDATE sponsored_events SET status = 'cancelled' WHERE id = $1", [params.id]);
+    await logAudit(userId!, "cancel_sponsored_event", params.id, `Cancelled "${rows[0].title}"`);
+    return { success: true };
   })
 
   /* Audit log */
