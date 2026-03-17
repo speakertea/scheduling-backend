@@ -22,7 +22,21 @@ export const sponsoredRoutes = new Elysia({ name: "sponsoredRoutes" })
        ORDER BY sed.delivered_at DESC`,
       [userId]
     );
-    return { events: rows };
+    const events = rows.map((r: any) => ({
+      id: r.id,
+      title: r.title,
+      description: r.description,
+      sponsorName: r.sponsor_name,
+      from: "Collabo",
+      location: r.location,
+      eventUrl: r.event_url,
+      startAt: r.start_at,
+      endAt: r.end_at,
+      rsvpStatus: r.rsvp_status || null,
+      totalGoing: r.going_count || 0,
+      totalInterested: r.interested_count || 0,
+    }));
+    return { events };
   })
 
   // RSVP to a sponsored event
