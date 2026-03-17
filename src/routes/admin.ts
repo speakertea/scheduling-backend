@@ -508,29 +508,31 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
       ORDER BY se.created_at DESC
     `);
 
-    return rows.map((r: any) => ({
-      id: r.id,
-      title: r.title,
-      description: r.description,
-      sponsorName: r.sponsor_name,
-      location: r.location,
-      eventUrl: r.event_url,
-      startAt: r.start_at,
-      endAt: r.end_at,
-      targetCities: r.target_cities,
-      targetRegions: r.target_regions,
-      targetAll: r.target_all,
-      status: r.status,
-      scheduledSendAt: r.scheduled_send_at,
-      sentAt: r.sent_at,
-      totalTargeted: r.total_targeted,
-      totalSent: r.total_sent,
-      totalOpened: r.total_opened,
-      totalRsvp: r.total_rsvp,
-      goingCount: r.going_count,
-      interestedCount: r.interested_count,
-      createdAt: r.created_at,
-    }));
+    return {
+      events: rows.map((r: any) => ({
+        id: r.id,
+        title: r.title,
+        description: r.description,
+        sponsorName: r.sponsor_name,
+        location: r.location,
+        eventUrl: r.event_url,
+        startAt: r.start_at,
+        endAt: r.end_at,
+        targetCities: r.target_cities,
+        targetRegions: r.target_regions,
+        targetAll: r.target_all,
+        status: r.status,
+        scheduledSendAt: r.scheduled_send_at,
+        sentAt: r.sent_at,
+        totalTargeted: r.total_targeted,
+        totalSent: r.total_sent,
+        totalOpened: r.total_opened,
+        totalRsvp: r.total_rsvp,
+        goingCount: r.going_count,
+        interestedCount: r.interested_count,
+        createdAt: r.created_at,
+      })),
+    };
   })
 
   /* Sponsored event detail */
@@ -556,16 +558,21 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
     for (const r of rsvps) rsvpBreakdown[r.rsvp_status] = r.count;
 
     return {
-      id: e.id, title: e.title, description: e.description,
-      sponsorName: e.sponsor_name, location: e.location, eventUrl: e.event_url,
-      startAt: e.start_at, endAt: e.end_at,
-      targetCities: e.target_cities, targetRegions: e.target_regions, targetAll: e.target_all,
-      status: e.status, scheduledSendAt: e.scheduled_send_at, sentAt: e.sent_at,
-      totalTargeted: e.total_targeted, totalSent: e.total_sent,
-      totalOpened: e.total_opened, totalRsvp: e.total_rsvp,
-      createdAt: e.created_at,
-      rsvpBreakdown,
-      delivery: deliveryStats.rows?.[0] || deliveryStats[0] || { total: 0, delivered: 0, opened: 0 },
+      event: {
+        id: e.id, title: e.title, description: e.description,
+        sponsorName: e.sponsor_name, location: e.location, eventUrl: e.event_url,
+        startAt: e.start_at, endAt: e.end_at,
+        targetCities: e.target_cities, targetRegions: e.target_regions, targetAll: e.target_all,
+        status: e.status, scheduledSendAt: e.scheduled_send_at, sentAt: e.sent_at,
+        totalTargeted: e.total_targeted, totalSent: e.total_sent,
+        totalOpened: e.total_opened, totalRsvp: e.total_rsvp,
+        createdAt: e.created_at,
+        rsvp_going: rsvpBreakdown["going"] || 0,
+        rsvp_interested: rsvpBreakdown["interested"] || 0,
+        rsvp_not_going: rsvpBreakdown["not_going"] || 0,
+        rsvpBreakdown,
+        delivery: deliveryStats.rows?.[0] || deliveryStats[0] || { total: 0, delivered: 0, opened: 0 },
+      },
     };
   })
 
