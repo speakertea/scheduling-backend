@@ -196,6 +196,33 @@ export async function createTables() {
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_api_logs_created ON api_request_logs(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS friend_connections (
+      id             TEXT PRIMARY KEY,
+      user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      friend_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, friend_user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_friend_conn_user ON friend_connections(user_id);
+
+    CREATE TABLE IF NOT EXISTS friend_requests (
+      id           TEXT PRIMARY KEY,
+      from_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      to_user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status       TEXT NOT NULL CHECK(status IN ('pending','accepted','declined')) DEFAULT 'pending',
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(from_user_id, to_user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS group_memberships (
+      id        TEXT PRIMARY KEY,
+      group_id  TEXT NOT NULL REFERENCES groups_(id) ON DELETE CASCADE,
+      user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role      TEXT NOT NULL CHECK(role IN ('admin','member')) DEFAULT 'member',
+      joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(group_id, user_id)
+    );
   `);
 
   // Backfill referral_code for any users that don't have one yet
