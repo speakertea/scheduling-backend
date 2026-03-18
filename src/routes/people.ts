@@ -420,6 +420,56 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
      GROUP INVITE LINKS
   ────────────────────────────────────────────── */
 
+  // List active invite links for a group with creator info (members see all)
+  .get("/groups/:id/invite-links", async ({ userId, params, set }) => {
+    const { rows: membership } = await query(
+      "SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0) {
+      set.status = 403;
+      return { error: "You must be a member of this group." };
+    }
+
+    const { rows } = await query(
+      `SELECT gl.id, gl.code, gl.created_at,
+              u.id AS creator_id, u.name AS creator_name, u.username AS creator_username
+       FROM group_invite_links gl
+       JOIN users u ON u.id = gl.created_by
+       WHERE gl.group_id = $1 AND gl.is_active = TRUE
+       ORDER BY gl.created_at DESC`,
+      [params.id]
+    );
+    return rows.map((r: any) => ({
+      id: r.id,
+      code: r.code,
+      link: `https://collabo.cloud/join/${r.code}`,
+      createdAt: r.created_at,
+      createdBy: { id: r.creator_id, name: r.creator_name, username: r.creator_username },
+    }));
+  })
+
+  // Revoke a specific invite link by link id (admin only)
+  .delete("/groups/:id/invite-links/:linkId", async ({ userId, params, set }) => {
+    const { rows: membership } = await query(
+      "SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0 || membership[0].role !== "admin") {
+      set.status = 403;
+      return { error: "Only group admins can revoke specific invite links." };
+    }
+    const { rows } = await query(
+      "UPDATE group_invite_links SET is_active = FALSE WHERE id = $1 AND group_id = $2 RETURNING id",
+      [params.linkId, params.id]
+    );
+    if (rows.length === 0) {
+      set.status = 404;
+      return { error: "Invite link not found." };
+    }
+    return { success: true };
+  })
+
   // Generate (or retrieve existing) invite link for a group — any member can share
   .post("/groups/:id/invite-link", async ({ userId, params, set }) => {
     const { rows: membership } = await query(
