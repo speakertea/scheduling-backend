@@ -2,6 +2,13 @@ import { Elysia, t } from "elysia";
 import { query } from "../db";
 import { authGuard } from "./guard";
 
+function generateInviteCode(): string {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let code = "";
+  for (let i = 0; i < 8; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
 export const peopleRoutes = new Elysia({ prefix: "/people" })
   .use(authGuard)
 
@@ -407,4 +414,101 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
     return { success: true };
   }, {
     body: t.Object({ role: t.Union([t.Literal("admin"), t.Literal("member")]) }),
+  })
+
+  /* ──────────────────────────────────────────────
+     GROUP INVITE LINKS
+  ────────────────────────────────────────────── */
+
+  // Generate (or retrieve existing) invite link for a group — any member can share
+  .post("/groups/:id/invite-link", async ({ userId, params, set }) => {
+    const { rows: membership } = await query(
+      "SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0) {
+      set.status = 403;
+      return { error: "You must be a member of this group." };
+    }
+
+    // Re-use existing active link if one exists
+    const { rows: existing } = await query(
+      "SELECT code FROM group_invite_links WHERE group_id = $1 AND is_active = TRUE ORDER BY created_at DESC LIMIT 1",
+      [params.id]
+    );
+    if (existing.length > 0) {
+      return { code: existing[0].code, link: `https://collabo.cloud/join/${existing[0].code}` };
+    }
+
+    // Generate unique code
+    let code = generateInviteCode();
+    while (true) {
+      const { rows: clash } = await query("SELECT id FROM group_invite_links WHERE code = $1", [code]);
+      if (clash.length === 0) break;
+      code = generateInviteCode();
+    }
+
+    await query(
+      "INSERT INTO group_invite_links (id, group_id, code, created_by) VALUES ($1, $2, $3, $4)",
+      [crypto.randomUUID(), params.id, code, userId]
+    );
+    set.status = 201;
+    return { code, link: `https://collabo.cloud/join/${code}` };
+  })
+
+  // Revoke all invite links for a group (admin only)
+  .delete("/groups/:id/invite-link", async ({ userId, params, set }) => {
+    const { rows: membership } = await query(
+      "SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0 || membership[0].role !== "admin") {
+      set.status = 403;
+      return { error: "Only group admins can revoke invite links." };
+    }
+    await query(
+      "UPDATE group_invite_links SET is_active = FALSE WHERE group_id = $1 AND is_active = TRUE",
+      [params.id]
+    );
+    return { success: true };
+  })
+
+  /* ──────────────────────────────────────────────
+     JOIN VIA INVITE LINK
+  ────────────────────────────────────────────── */
+
+  // Join a group via invite code
+  .post("/join/:code", async ({ userId, params, set }) => {
+    const { rows: links } = await query(
+      `SELECT gl.group_id, g.name AS group_name
+       FROM group_invite_links gl
+       JOIN groups_ g ON g.id = gl.group_id
+       WHERE gl.code = $1 AND gl.is_active = TRUE`,
+      [params.code]
+    );
+    if (links.length === 0) {
+      set.status = 404;
+      return { error: "Invite link is invalid or has been revoked." };
+    }
+    const { group_id, group_name } = links[0];
+
+    // Already a member?
+    const { rows: existing } = await query(
+      "SELECT id FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [group_id, userId]
+    );
+    if (existing.length > 0) {
+      return { alreadyMember: true, groupId: group_id, groupName: group_name };
+    }
+
+    await query(
+      "INSERT INTO group_memberships (id, group_id, user_id, role) VALUES ($1, $2, $3, 'member')",
+      [crypto.randomUUID(), group_id, userId]
+    );
+    await query(
+      "UPDATE groups_ SET total_members = (SELECT COUNT(*) FROM group_memberships WHERE group_id = $1) WHERE id = $1",
+      [group_id]
+    );
+    set.status = 201;
+    return { success: true, groupId: group_id, groupName: group_name };
   });

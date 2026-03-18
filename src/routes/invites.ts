@@ -59,4 +59,18 @@ export const inviteRoutes = new Elysia({ prefix: "/invites" })
     body: t.Object({
       status: t.Union([t.Literal("yes"), t.Literal("maybe"), t.Literal("no"), t.Null()]),
     }),
+  })
+
+  // Revoke a sent invite (organizer only — organizer = "You" means user_id matches)
+  .delete("/:id", async ({ userId, params, set }) => {
+    const { rows } = await query(
+      "SELECT id, organizer FROM invites WHERE id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (rows.length === 0) {
+      set.status = 404;
+      return { error: "Invite not found or you are not the organizer." };
+    }
+    await query("DELETE FROM invites WHERE id = $1", [params.id]);
+    return { success: true };
   });

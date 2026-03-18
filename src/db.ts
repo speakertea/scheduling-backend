@@ -268,6 +268,16 @@ export async function createTables() {
       UNIQUE(sponsored_event_id, user_id)
     );
 
+    CREATE TABLE IF NOT EXISTS group_invite_links (
+      id         TEXT PRIMARY KEY,
+      group_id   TEXT NOT NULL REFERENCES groups_(id) ON DELETE CASCADE,
+      code       TEXT NOT NULL UNIQUE,
+      created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      is_active  BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_group_invite_links_code ON group_invite_links(code);
+
     CREATE TABLE IF NOT EXISTS sponsored_event_deliveries (
       id                 TEXT PRIMARY KEY,
       sponsored_event_id TEXT NOT NULL REFERENCES sponsored_events(id) ON DELETE CASCADE,
