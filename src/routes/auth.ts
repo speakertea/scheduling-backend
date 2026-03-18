@@ -301,10 +301,10 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     const token = (headers.authorization || "").replace("Bearer ", "");
     try {
       const { userId } = verifyToken(token);
-      const { rows } = await query("SELECT id,email,username,name,about_me,profile_picture FROM users WHERE id = $1", [userId]);
+      const { rows } = await query("SELECT id,email,username,name,about_me,profile_picture,created_at FROM users WHERE id = $1", [userId]);
       if (rows.length === 0) { set.status = 404; return { error: "User not found" }; }
       const u = rows[0];
-      return { id: u.id, email: u.email, username: u.username, name: u.name, aboutMe: u.about_me, profilePicture: u.profile_picture };
+      return { id: u.id, email: u.email, username: u.username, name: u.name, aboutMe: u.about_me, profilePicture: u.profile_picture, createdAt: u.created_at };
     } catch {
       set.status = 401;
       return { error: "Invalid token" };
