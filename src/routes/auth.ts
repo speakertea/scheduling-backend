@@ -90,7 +90,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     // Send the email
     try {
       await resend.emails.send({
-        from: "Scheduling App <onboarding@resend.dev>",
+        from: "Collabo <verify@collabo.cloud>",
         to: cleanEmail,
         subject: "Your verification code",
         html: `
@@ -244,7 +244,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
 
     try {
       await resend.emails.send({
-        from: "Scheduling App <onboarding@resend.dev>",
+        from: "Collabo <verify@collabo.cloud>",
         to: cleanEmail,
         subject: "Your new verification code",
         html: `
@@ -340,7 +340,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
 
     try {
       await resend.emails.send({
-        from: "Scheduling App <onboarding@resend.dev>",
+        from: "Collabo <verify@collabo.cloud>",
         to: cleanEmail,
         subject: "Reset your password",
         html: `
@@ -449,7 +449,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
 
     try {
       await resend.emails.send({
-        from: "Scheduling App <onboarding@resend.dev>",
+        from: "Collabo <verify@collabo.cloud>",
         to: cleanEmail,
         subject: "Your new password reset code",
         html: `
