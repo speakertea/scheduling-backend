@@ -7,14 +7,14 @@ import { sanitizeName, sanitizeNotes } from "../utils";
 async function getUser(userId: string) {
   try {
     const { rows } = await query(
-      "SELECT username,name,about_me,profile_picture,username_changed_at FROM users WHERE id=$1",
+      "SELECT username,name,about_me,profile_picture,username_changed_at,created_at FROM users WHERE id=$1",
       [userId]
     );
     return rows[0] ?? null;
   } catch {
     // Column doesn't exist yet — fall back without it
     const { rows } = await query(
-      "SELECT username,name,about_me,profile_picture FROM users WHERE id=$1",
+      "SELECT username,name,about_me,profile_picture,created_at FROM users WHERE id=$1",
       [userId]
     );
     return rows[0] ? { ...rows[0], username_changed_at: null } : null;
@@ -33,6 +33,7 @@ export const profileRoutes = new Elysia({ prefix: "/profile" })
       aboutMe: u.about_me,
       profilePicture: u.profile_picture,
       usernameChangedAt: u.username_changed_at ?? null,
+      createdAt: u.created_at ?? null,
     };
   })
 
