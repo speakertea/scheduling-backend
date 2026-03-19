@@ -1,8 +1,8 @@
 import { Elysia, t } from "elysia";
-import bcrypt from "bcryptjs";
 import { query, logAudit } from "../db";
 import { adminGuard } from "./admin-guard";
 import { sendSponsoredEvent } from "../sponsored-send";
+import { Resend } from "resend";
 
 export const adminRoutes = new Elysia({ prefix: "/admin" })
   .use(adminGuard)
@@ -123,17 +123,42 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
     return { success: true };
   })
 
-  /* Reset user password (sends them a temporary one via email — for now just resets to a known value) */
+  /* Trigger a reset email for the user */
   .post("/users/:id/reset-password", async ({ params, userId, set }) => {
     const { rows } = await query("SELECT email FROM users WHERE id = $1", [params.id]);
     if (rows.length === 0) { set.status = 404; return { error: "User not found" }; }
 
-    const tempPassword = crypto.randomUUID().slice(0, 12);
-    const hash = bcrypt.hashSync(tempPassword, 10);
-    await query("UPDATE users SET password_hash = $1 WHERE id = $2", [hash, params.id]);
-    await logAudit(userId!, "reset_password", params.id, `Temp password issued`);
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    await query("UPDATE verification_codes SET used = TRUE WHERE email = $1 AND used = FALSE AND name = '__reset__'", [rows[0].email]);
+    await query(
+      "INSERT INTO verification_codes (email, code, name, password_hash, expires_at) VALUES ($1, $2, '__reset__', '__reset__', NOW() + INTERVAL '10 minutes')",
+      [rows[0].email, code]
+    );
 
-    return { success: true, tempPassword, email: rows[0].email };
+    try {
+      const resend = new Resend(process.env.RESEND_API_KEY);
+      await resend.emails.send({
+        from: "Collabo <verify@collabo.cloud>",
+        to: rows[0].email,
+        subject: "Reset your Collabo password",
+        html: `
+          <div style="font-family: sans-serif; max-width: 400px; margin: 0 auto; padding: 24px;">
+            <h2 style="color: #0f172a; margin-bottom: 8px;">Reset your password</h2>
+            <p style="color: #475569; margin-bottom: 24px;">A Collabo admin requested a password reset for your account. Enter this code in the app to choose a new password:</p>
+            <div style="background: #f1f5f9; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 24px;">
+              <span style="font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #0f172a;">${code}</span>
+            </div>
+            <p style="color: #94a3b8; font-size: 13px;">This code expires in 10 minutes.</p>
+          </div>
+        `,
+      });
+    } catch {
+      set.status = 500;
+      return { error: "Failed to send reset email." };
+    }
+
+    await logAudit(userId!, "reset_password", params.id, `Reset email sent to ${rows[0].email}`);
+    return { success: true };
   })
 
   /* Delete user and all their data */
@@ -571,7 +596,7 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
         rsvp_interested: rsvpBreakdown["interested"] || 0,
         rsvp_not_going: rsvpBreakdown["not_going"] || 0,
         rsvpBreakdown,
-        delivery: deliveryStats.rows?.[0] || deliveryStats[0] || { total: 0, delivered: 0, opened: 0 },
+        delivery: (deliveryStats as any)?.rows?.[0] || { total: 0, delivered: 0, opened: 0 },
       },
     };
   })
@@ -674,3 +699,7 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
       totalPages: Math.ceil(total[0].c / limit),
     };
   });
+
+
+
+

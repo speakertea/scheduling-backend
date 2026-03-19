@@ -8,12 +8,10 @@ export function getPool(): Pool {
   return _pool;
 }
 
-/** Shorthand for a single query */
 export async function query(sql: string, params?: any[]) {
   return getPool().query(sql, params);
 }
 
-/** Generates an 8-character lowercase alphanumeric referral code */
 export function generateReferralCode(): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
   let code = "";
@@ -22,10 +20,6 @@ export function generateReferralCode(): string {
   }
   return code;
 }
-
-/* ------------------------------------------------------------------ */
-/*  Schema                                                             */
-/* ------------------------------------------------------------------ */
 
 export async function createTables() {
   await query(`
@@ -44,21 +38,12 @@ export async function createTables() {
       created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
-    -- Add columns to existing tables if they don't exist
     DO $$ BEGIN
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_disabled BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT;
-    EXCEPTION WHEN OTHERS THEN NULL;
-    END $$;
-
-    DO $$ BEGIN
       ALTER TABLE users ADD COLUMN IF NOT EXISTS username_changed_at TIMESTAMPTZ;
-    EXCEPTION WHEN OTHERS THEN NULL;
-    END $$;
-
-    DO $$ BEGIN
       ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS region TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS country TEXT;
@@ -66,44 +51,43 @@ export async function createTables() {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS longitude FLOAT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS last_ip TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS location_updated_at TIMESTAMPTZ;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by TEXT REFERENCES users(id);
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
 
     DO $$ BEGIN
       ALTER TABLE users ADD CONSTRAINT users_username_unique UNIQUE (username);
     EXCEPTION WHEN duplicate_table THEN NULL;
-    END $$;
-
-    DO $$ BEGIN
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by TEXT REFERENCES users(id);
-    EXCEPTION WHEN OTHERS THEN NULL;
+    WHEN duplicate_object THEN NULL;
     END $$;
 
     CREATE TABLE IF NOT EXISTS events (
-      id         TEXT PRIMARY KEY,
-      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      title      TEXT NOT NULL,
-      type       TEXT NOT NULL CHECK(type IN ('study','meetup','class')),
-      start_at   TEXT NOT NULL,
-      end_at     TEXT NOT NULL,
-      location   TEXT,
-      notes      TEXT,
-      notified   BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      id                  TEXT PRIMARY KEY,
+      user_id             TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title               TEXT NOT NULL,
+      type                TEXT NOT NULL CHECK(type IN ('study','meetup','class')),
+      start_at            TEXT NOT NULL,
+      end_at              TEXT NOT NULL,
+      location            TEXT,
+      notes               TEXT,
+      notified            BOOLEAN NOT NULL DEFAULT FALSE,
+      recurrence_rule     TEXT,
+      recurrence_end_date TEXT,
+      parent_event_id     TEXT,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id);
     CREATE INDEX IF NOT EXISTS idx_events_start ON events(user_id, start_at);
+    CREATE INDEX IF NOT EXISTS idx_events_updated ON events(user_id, updated_at);
 
     DO $$ BEGIN
       ALTER TABLE events ADD COLUMN IF NOT EXISTS notified BOOLEAN NOT NULL DEFAULT FALSE;
-    EXCEPTION WHEN OTHERS THEN NULL;
-    END $$;
-
-    DO $$ BEGIN
       ALTER TABLE events ADD COLUMN IF NOT EXISTS recurrence_rule TEXT;
       ALTER TABLE events ADD COLUMN IF NOT EXISTS recurrence_end_date TEXT;
       ALTER TABLE events ADD COLUMN IF NOT EXISTS parent_event_id TEXT;
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
 
@@ -127,31 +111,52 @@ export async function createTables() {
     );
 
     CREATE TABLE IF NOT EXISTS invites (
-      id            TEXT PRIMARY KEY,
-      user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      title         TEXT NOT NULL,
-      organizer     TEXT NOT NULL,
-      group_name    TEXT,
-      location      TEXT NOT NULL,
-      start_at      TEXT NOT NULL,
-      end_at        TEXT NOT NULL,
-      total_invited INTEGER NOT NULL,
-      is_group      BOOLEAN NOT NULL DEFAULT FALSE,
-      rsvp_status   TEXT CHECK(rsvp_status IN ('yes','maybe','no')),
-      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      id             TEXT PRIMARY KEY,
+      thread_id      TEXT,
+      user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      sender_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      title          TEXT NOT NULL,
+      organizer      TEXT NOT NULL,
+      group_name     TEXT,
+      location       TEXT NOT NULL,
+      start_at       TEXT NOT NULL,
+      end_at         TEXT NOT NULL,
+      total_invited  INTEGER NOT NULL,
+      is_group       BOOLEAN NOT NULL DEFAULT FALSE,
+      rsvp_status    TEXT CHECK(rsvp_status IN ('yes','maybe','no')),
+      created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE INDEX IF NOT EXISTS idx_invites_user_updated ON invites(user_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_invites_thread ON invites(thread_id);
+
+    DO $$ BEGIN
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS thread_id TEXT;
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS sender_user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS invite_attendees (
       id        SERIAL PRIMARY KEY,
       invite_id TEXT NOT NULL REFERENCES invites(id) ON DELETE CASCADE,
+      user_id   TEXT REFERENCES users(id) ON DELETE SET NULL,
       name      TEXT NOT NULL,
       status    TEXT CHECK(status IN ('yes','maybe','no')),
       is_friend BOOLEAN NOT NULL DEFAULT FALSE
     );
+    CREATE INDEX IF NOT EXISTS idx_invite_attendees_user ON invite_attendees(user_id);
+
+    DO $$ BEGIN
+      ALTER TABLE invite_attendees ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS calendar_events (
       id              TEXT PRIMARY KEY,
+      thread_id       TEXT,
       user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      sender_user_id  TEXT REFERENCES users(id) ON DELETE SET NULL,
       title           TEXT NOT NULL,
       creator         TEXT NOT NULL,
       group_name      TEXT,
@@ -163,8 +168,18 @@ export async function createTables() {
       is_group        BOOLEAN NOT NULL DEFAULT FALSE,
       accept_status   TEXT CHECK(accept_status IN ('accepted','declined')),
       reminder_times  TEXT,
-      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_user_updated ON calendar_events(user_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_thread ON calendar_events(thread_id);
+
+    DO $$ BEGIN
+      ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS thread_id TEXT;
+      ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS sender_user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS notification_dismissals (
       id              SERIAL PRIMARY KEY,
@@ -176,16 +191,44 @@ export async function createTables() {
     );
 
     CREATE TABLE IF NOT EXISTS verification_codes (
-      id         SERIAL PRIMARY KEY,
-      email      TEXT NOT NULL,
-      code       TEXT NOT NULL,
-      name       TEXT,
+      id            SERIAL PRIMARY KEY,
+      email         TEXT NOT NULL,
+      code          TEXT NOT NULL,
+      username      TEXT,
+      name          TEXT,
       password_hash TEXT NOT NULL,
-      expires_at TIMESTAMPTZ NOT NULL,
-      used       BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      expires_at    TIMESTAMPTZ NOT NULL,
+      used          BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_verification_email ON verification_codes(email, code);
+
+    DO $$ BEGIN
+      ALTER TABLE verification_codes ADD COLUMN IF NOT EXISTS username TEXT;
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
+
+    CREATE TABLE IF NOT EXISTS refresh_sessions (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      revoked_at TIMESTAMPTZ,
+      replaced_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_refresh_sessions_user ON refresh_sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_refresh_sessions_expires ON refresh_sessions(expires_at);
+
+    CREATE TABLE IF NOT EXISTS deleted_entities (
+      id          SERIAL PRIMARY KEY,
+      user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      entity_type TEXT NOT NULL CHECK(entity_type IN ('event','invite','calendar_event')),
+      entity_id   TEXT NOT NULL,
+      payload_json TEXT,
+      deleted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_deleted_entities_user_deleted ON deleted_entities(user_id, deleted_at);
 
     CREATE TABLE IF NOT EXISTS audit_logs (
       id         SERIAL PRIMARY KEY,
@@ -290,23 +333,17 @@ export async function createTables() {
     );
   `);
 
-  // Backfill referral_code for any users that don't have one yet
   const { rows: usersWithoutCode } = await query("SELECT id FROM users WHERE referral_code IS NULL");
-  for (const u of usersWithoutCode) {
+  for (const user of usersWithoutCode) {
     let code = generateReferralCode();
-    // Retry on collision
     while (true) {
       const { rows: clash } = await query("SELECT id FROM users WHERE referral_code = $1", [code]);
       if (clash.length === 0) break;
       code = generateReferralCode();
     }
-    await query("UPDATE users SET referral_code = $1 WHERE id = $2", [code, u.id]);
+    await query("UPDATE users SET referral_code = $1 WHERE id = $2", [code, user.id]);
   }
 }
-
-/* ------------------------------------------------------------------ */
-/*  Admin utilities                                                    */
-/* ------------------------------------------------------------------ */
 
 export async function logAudit(adminId: string, action: string, targetId?: string, details?: string) {
   await query(

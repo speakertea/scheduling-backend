@@ -17,6 +17,7 @@ import { avatarRoutes } from "./routes/avatar";
 import { referralRoutes } from "./routes/referrals";
 import { peopleRoutes } from "./routes/people";
 import { sponsoredRoutes } from "./routes/sponsored";
+import { syncRoutes } from "./routes/sync";
 import { query as dbQuery } from "./db";
 import { sendSponsoredEvent } from "./sponsored-send";
 import { verifyToken } from "./auth";
@@ -61,6 +62,7 @@ const app = new Elysia({ serve: { maxRequestBodySize: 10 * 1024 * 1024 } })
       .use(referralRoutes)
       .use(peopleRoutes)
       .use(sponsoredRoutes)
+      .use(syncRoutes)
       .ws("/ws", {
         query: t.Object({ token: t.Optional(t.String()) }),
         open(ws) {
@@ -110,3 +112,5 @@ console.log(`
 `);
 
 export type App = typeof app;
+
+

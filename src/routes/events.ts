@@ -4,51 +4,100 @@ import { authGuard } from "./guard";
 import { sanitizeTitle, sanitizeLocation, sanitizeNotes } from "../utils";
 import { broadcastToUser } from "../broadcast";
 
-const toEvent = (r: any) => ({
-  id: r.id, title: r.title, type: r.type, startAt: r.start_at, endAt: r.end_at,
-  location: r.location || undefined, notes: r.notes || undefined,
-  recurrenceRule: r.recurrence_rule || undefined,
-  parentEventId: r.parent_event_id || undefined,
+const toEvent = (row: any) => ({
+  id: row.id,
+  title: row.title,
+  type: row.type,
+  startAt: row.start_at,
+  endAt: row.end_at,
+  location: row.location || undefined,
+  notes: row.notes || undefined,
+  recurrenceRule: row.recurrence_rule || undefined,
+  parentEventId: row.parent_event_id || undefined,
 });
 
 function nextOccurrence(date: Date, rule: string): Date {
-  const d = new Date(date);
+  const next = new Date(date);
   switch (rule) {
-    case "daily":    d.setDate(d.getDate() + 1);   break;
-    case "weekly":   d.setDate(d.getDate() + 7);   break;
-    case "biweekly": d.setDate(d.getDate() + 14);  break;
-    case "monthly":  d.setMonth(d.getMonth() + 1); break;
+    case "daily":
+      next.setDate(next.getDate() + 1);
+      break;
+    case "weekly":
+      next.setDate(next.getDate() + 7);
+      break;
+    case "biweekly":
+      next.setDate(next.getDate() + 14);
+      break;
+    case "monthly":
+      next.setMonth(next.getMonth() + 1);
+      break;
   }
-  return d;
+  return next;
+}
+
+async function recordDeletion(userId: string, entityId: string, payload?: Record<string, unknown>) {
+  await dbQuery(
+    "INSERT INTO deleted_entities (user_id, entity_type, entity_id, payload_json) VALUES ($1, 'event', $2, $3)",
+    [userId, entityId, payload ? JSON.stringify(payload) : null]
+  );
+}
+
+async function broadcastEvent(userId: string, row: any) {
+  broadcastToUser(userId, { type: "event_upsert", payload: toEvent(row) });
 }
 
 export const eventRoutes = new Elysia({ prefix: "/events" })
   .use(authGuard)
 
-  .get("/", async ({ userId }) => {
-    const { rows } = await dbQuery("SELECT * FROM events WHERE user_id=$1 ORDER BY start_at ASC", [userId]);
+  .get("/", async ({ userId, query: qs }) => {
+    const currentUserId = userId as string;
+    const start = typeof qs.start === "string" ? qs.start : null;
+    const end = typeof qs.end === "string" ? qs.end : null;
+
+    const conditions = ["user_id = $1"];
+    const params: any[] = [currentUserId];
+
+    if (start) {
+      params.push(start);
+      conditions.push(`end_at >= $${params.length}`);
+    }
+    if (end) {
+      params.push(end);
+      conditions.push(`start_at <= $${params.length}`);
+    }
+
+    const { rows } = await dbQuery(
+      `SELECT * FROM events WHERE ${conditions.join(" AND ")} ORDER BY start_at ASC`,
+      params
+    );
     return rows.map(toEvent);
   })
 
   .get("/:id", async ({ userId, params }) => {
-    const { rows } = await dbQuery("SELECT * FROM events WHERE id=$1 AND user_id=$2", [params.id, userId]);
+    const currentUserId = userId as string;
+    const { rows } = await dbQuery("SELECT * FROM events WHERE id = $1 AND user_id = $2", [params.id, currentUserId]);
     if (rows.length === 0) return new Response(JSON.stringify({ error: "Event not found" }), { status: 404 });
     return toEvent(rows[0]);
   })
 
   .post("/", async ({ userId, body, set }) => {
-    const { title: rawTitle, type, startAt, endAt, location: rawLocation, notes: rawNotes, recurrenceRule, recurrenceEndDate } = body;
-    const title    = sanitizeTitle(rawTitle);
+    const currentUserId = userId as string;
+    const { id, title: rawTitle, type, startAt, endAt, location: rawLocation, notes: rawNotes, recurrenceRule, recurrenceEndDate } = body;
+    const title = sanitizeTitle(rawTitle);
     const location = rawLocation ? sanitizeLocation(rawLocation) : undefined;
-    const notes    = rawNotes    ? sanitizeNotes(rawNotes)        : undefined;
+    const notes = rawNotes ? sanitizeNotes(rawNotes) : undefined;
 
-    const parentId = crypto.randomUUID();
+    const parentId = id || crypto.randomUUID();
     const durationMs = new Date(endAt).getTime() - new Date(startAt).getTime();
+    const createdRows: any[] = [];
 
     await dbQuery(
-      "INSERT INTO events (id,user_id,title,type,start_at,end_at,location,notes,recurrence_rule,recurrence_end_date,parent_event_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
-      [parentId, userId, title, type, startAt, endAt, location || null, notes || null, recurrenceRule || null, recurrenceEndDate || null, null]
+      `INSERT INTO events (id, user_id, title, type, start_at, end_at, location, notes, recurrence_rule, recurrence_end_date, parent_event_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [parentId, currentUserId, title, type, startAt, endAt, location || null, notes || null, recurrenceRule || null, recurrenceEndDate || null, null]
     );
+    const { rows: parentRows } = await dbQuery("SELECT * FROM events WHERE id = $1", [parentId]);
+    createdRows.push(parentRows[0]);
 
     if (recurrenceRule && recurrenceEndDate) {
       const endBoundary = new Date(recurrenceEndDate);
@@ -61,33 +110,22 @@ export const eventRoutes = new Elysia({ prefix: "/events" })
         const instanceStart = current.toISOString();
         const instanceEnd = new Date(current.getTime() + durationMs).toISOString();
         await dbQuery(
-          "INSERT INTO events (id,user_id,title,type,start_at,end_at,location,notes,recurrence_rule,recurrence_end_date,parent_event_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
-          [instanceId, userId, title, type, instanceStart, instanceEnd, location || null, notes || null, recurrenceRule, recurrenceEndDate, parentId]
+          `INSERT INTO events (id, user_id, title, type, start_at, end_at, location, notes, recurrence_rule, recurrence_end_date, parent_event_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [instanceId, currentUserId, title, type, instanceStart, instanceEnd, location || null, notes || null, recurrenceRule, recurrenceEndDate, parentId]
         );
+        const { rows: created } = await dbQuery("SELECT * FROM events WHERE id = $1", [instanceId]);
+        createdRows.push(created[0]);
         count++;
       }
     }
 
     set.status = 201;
-    broadcastToUser(userId, {
-      type: "event_created",
-      payload: { id: parentId, title, type, startAt, endAt, location, notes, recurrenceRule },
-    });
-    if (recurrenceRule && recurrenceEndDate) {
-      const { rows: instances } = await dbQuery(
-        "SELECT * FROM events WHERE parent_event_id=$1", [parentId]
-      );
-      for (const inst of instances) {
-        broadcastToUser(userId, { type: "event_created", payload: toEvent(inst) });
-      }
-    }
-    return {
-      id: parentId, title, type, startAt, endAt,
-      location: location || undefined, notes: notes || undefined,
-      recurrenceRule: recurrenceRule || undefined,
-    };
+    for (const row of createdRows) await broadcastEvent(currentUserId, row);
+    return createdRows.map(toEvent);
   }, {
     body: t.Object({
+      id: t.Optional(t.String()),
       title: t.String(),
       type: t.Union([t.Literal("study"), t.Literal("meetup"), t.Literal("class")]),
       startAt: t.String(),
@@ -100,35 +138,49 @@ export const eventRoutes = new Elysia({ prefix: "/events" })
   })
 
   .patch("/:id", async ({ userId, params, query: qs, body }) => {
-    const { rows } = await dbQuery("SELECT * FROM events WHERE id=$1 AND user_id=$2", [params.id, userId]);
+    const currentUserId = userId as string;
+    const { rows } = await dbQuery("SELECT * FROM events WHERE id = $1 AND user_id = $2", [params.id, currentUserId]);
     if (rows.length === 0) return new Response(JSON.stringify({ error: "Event not found" }), { status: 404 });
-    const ev = rows[0];
-    const editAll = (qs as Record<string, string>).editAll === "true";
 
+    const event = rows[0];
+    const editAll = (qs as Record<string, string>).editAll === "true";
     const { title: rawTitle, type, startAt, endAt, location: rawLocation, notes: rawNotes } = body;
-    const title    = rawTitle    !== undefined ? sanitizeTitle(rawTitle)                              : ev.title;
-    const location = rawLocation !== undefined ? (rawLocation ? sanitizeLocation(rawLocation) : null) : ev.location;
-    const notes    = rawNotes    !== undefined ? (rawNotes    ? sanitizeNotes(rawNotes)        : null) : ev.notes;
-    const finalType    = type    || ev.type;
-    const finalStartAt = startAt || ev.start_at;
-    const finalEndAt   = endAt   || ev.end_at;
+
+    const title = rawTitle !== undefined ? sanitizeTitle(rawTitle) : event.title;
+    const location = rawLocation !== undefined ? (rawLocation ? sanitizeLocation(rawLocation) : null) : event.location;
+    const notes = rawNotes !== undefined ? (rawNotes ? sanitizeNotes(rawNotes) : null) : event.notes;
+    const finalType = type || event.type;
+    const finalStartAt = startAt || event.start_at;
+    const finalEndAt = endAt || event.end_at;
+
+    let updatedRows: any[] = [];
 
     if (editAll) {
-      const parentId = ev.parent_event_id || ev.id;
+      const parentId = event.parent_event_id || event.id;
       await dbQuery(
-        `UPDATE events SET title=$1, type=$2, location=$3, notes=$4 WHERE user_id=$5 AND (id=$6 OR parent_event_id=$6) AND start_at >= $7`,
-        [title, finalType, location, notes, userId, parentId, ev.start_at]
+        `UPDATE events
+         SET title = $1, type = $2, location = $3, notes = $4, updated_at = NOW()
+         WHERE user_id = $5 AND (id = $6 OR parent_event_id = $6) AND start_at >= $7`,
+        [title, finalType, location, notes, currentUserId, parentId, event.start_at]
       );
+      const { rows: refreshed } = await dbQuery(
+        "SELECT * FROM events WHERE user_id = $1 AND (id = $2 OR parent_event_id = $2) AND start_at >= $3 ORDER BY start_at ASC",
+        [currentUserId, parentId, event.start_at]
+      );
+      updatedRows = refreshed;
     } else {
       await dbQuery(
-        `UPDATE events SET title=$1, type=$2, start_at=$3, end_at=$4, location=$5, notes=$6 WHERE id=$7 AND user_id=$8`,
-        [title, finalType, finalStartAt, finalEndAt, location, notes, params.id, userId]
+        `UPDATE events
+         SET title = $1, type = $2, start_at = $3, end_at = $4, location = $5, notes = $6, updated_at = NOW()
+         WHERE id = $7 AND user_id = $8`,
+        [title, finalType, finalStartAt, finalEndAt, location, notes, params.id, currentUserId]
       );
+      const { rows: refreshed } = await dbQuery("SELECT * FROM events WHERE id = $1", [params.id]);
+      updatedRows = refreshed;
     }
 
-    const { rows: updated } = await dbQuery("SELECT * FROM events WHERE id=$1", [params.id]);
-    if (!updated[0]) return { success: true };
-    return toEvent(updated[0]);
+    for (const row of updatedRows) await broadcastEvent(currentUserId, row);
+    return updatedRows.length === 1 ? toEvent(updatedRows[0]) : updatedRows.map(toEvent);
   }, {
     body: t.Object({
       title: t.Optional(t.String()),
@@ -141,23 +193,31 @@ export const eventRoutes = new Elysia({ prefix: "/events" })
   })
 
   .delete("/:id", async ({ userId, params, query: qs }) => {
-    const { rows } = await dbQuery("SELECT * FROM events WHERE id=$1 AND user_id=$2", [params.id, userId]);
+    const currentUserId = userId as string;
+    const { rows } = await dbQuery("SELECT * FROM events WHERE id = $1 AND user_id = $2", [params.id, currentUserId]);
     if (rows.length === 0) return new Response(JSON.stringify({ error: "Event not found" }), { status: 404 });
-    const ev = rows[0];
+
+    const event = rows[0];
     const deleteAll = (qs as Record<string, string>).deleteAll === "true";
 
     if (deleteAll) {
-      const parentId = ev.parent_event_id || ev.id;
-      await dbQuery("DELETE FROM events WHERE user_id=$1 AND (id=$2 OR parent_event_id=$2)", [userId, parentId]);
+      const parentId = event.parent_event_id || event.id;
+      const { rows: doomed } = await dbQuery(
+        "SELECT id FROM events WHERE user_id = $1 AND (id = $2 OR parent_event_id = $2)",
+        [currentUserId, parentId]
+      );
+      for (const doomedRow of doomed) {
+        await recordDeletion(currentUserId, doomedRow.id, { deleteAll: true, parentId });
+      }
+      await dbQuery("DELETE FROM events WHERE user_id = $1 AND (id = $2 OR parent_event_id = $2)", [currentUserId, parentId]);
+      broadcastToUser(currentUserId, { type: "event_deleted", payload: { id: parentId, deleteAll: true, parentId } });
     } else {
-      await dbQuery("DELETE FROM events WHERE id=$1 AND user_id=$2", [params.id, userId]);
+      await recordDeletion(currentUserId, params.id, { deleteAll: false });
+      await dbQuery("DELETE FROM events WHERE id = $1 AND user_id = $2", [params.id, currentUserId]);
+      broadcastToUser(currentUserId, { type: "event_deleted", payload: { id: params.id, deleteAll: false } });
     }
 
-    if (deleteAll) {
-      const parentId = ev.parent_event_id || ev.id;
-      broadcastToUser(userId, { type: "event_deleted", payload: { id: parentId, deleteAll: true } });
-    } else {
-      broadcastToUser(userId, { type: "event_deleted", payload: { id: params.id, deleteAll: false } });
-    }
     return { success: true };
   });
+
+

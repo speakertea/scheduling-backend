@@ -2,9 +2,6 @@ import { Elysia } from "elysia";
 import { verifyToken } from "../auth";
 import { query, updateLastActive } from "../db";
 
-/**
- * Admin guard: verifies JWT, checks is_admin flag, updates last_active.
- */
 export const adminGuard = new Elysia({ name: "adminGuard" })
   .resolve({ as: "scoped" }, async ({ headers, set }) => {
     const token = (headers.authorization || "").replace("Bearer ", "");
@@ -12,6 +9,7 @@ export const adminGuard = new Elysia({ name: "adminGuard" })
       set.status = 401;
       return { userId: null as string | null, authError: "Missing Authorization header" };
     }
+
     try {
       const { userId } = verifyToken(token);
       const { rows } = await query("SELECT id, is_admin, is_disabled FROM users WHERE id = $1", [userId]);
@@ -27,6 +25,7 @@ export const adminGuard = new Elysia({ name: "adminGuard" })
         set.status = 403;
         return { userId: null as string | null, authError: "Admin access required" };
       }
+
       updateLastActive(userId).catch(() => {});
       return { userId: userId as string | null, authError: null as string | null };
     } catch {
@@ -34,9 +33,10 @@ export const adminGuard = new Elysia({ name: "adminGuard" })
       return { userId: null as string | null, authError: "Invalid or expired token" };
     }
   })
-  .onBeforeHandle({ as: "scoped" }, ({ userId, authError, set }) => {
+  .onBeforeHandle({ as: "scoped" }, ({ authError, set }) => {
     if (authError) {
-      set.status = set.status && set.status >= 400 ? set.status : 401;
+      const statusCode = typeof set.status === "number" ? set.status : Number(set.status || 0);
+      set.status = statusCode >= 400 ? statusCode : 401;
       return { error: authError };
     }
   });
