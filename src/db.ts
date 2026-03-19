@@ -80,7 +80,6 @@ export async function createTables() {
     );
     CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id);
     CREATE INDEX IF NOT EXISTS idx_events_start ON events(user_id, start_at);
-    CREATE INDEX IF NOT EXISTS idx_events_updated ON events(user_id, updated_at);
 
     DO $$ BEGIN
       ALTER TABLE events ADD COLUMN IF NOT EXISTS notified BOOLEAN NOT NULL DEFAULT FALSE;
@@ -90,6 +89,7 @@ export async function createTables() {
       ALTER TABLE events ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
+    CREATE INDEX IF NOT EXISTS idx_events_updated ON events(user_id, updated_at);
 
     CREATE TABLE IF NOT EXISTS groups_ (
       id            TEXT PRIMARY KEY,
@@ -127,8 +127,6 @@ export async function createTables() {
       created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    CREATE INDEX IF NOT EXISTS idx_invites_user_updated ON invites(user_id, updated_at);
-    CREATE INDEX IF NOT EXISTS idx_invites_thread ON invites(thread_id);
 
     DO $$ BEGIN
       ALTER TABLE invites ADD COLUMN IF NOT EXISTS thread_id TEXT;
@@ -136,6 +134,8 @@ export async function createTables() {
       ALTER TABLE invites ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
+    CREATE INDEX IF NOT EXISTS idx_invites_user_updated ON invites(user_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_invites_thread ON invites(thread_id);
 
     CREATE TABLE IF NOT EXISTS invite_attendees (
       id        SERIAL PRIMARY KEY,
@@ -171,8 +171,6 @@ export async function createTables() {
       created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    CREATE INDEX IF NOT EXISTS idx_calendar_events_user_updated ON calendar_events(user_id, updated_at);
-    CREATE INDEX IF NOT EXISTS idx_calendar_events_thread ON calendar_events(thread_id);
 
     DO $$ BEGIN
       ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS thread_id TEXT;
@@ -180,6 +178,8 @@ export async function createTables() {
       ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_user_updated ON calendar_events(user_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_thread ON calendar_events(thread_id);
 
     CREATE TABLE IF NOT EXISTS notification_dismissals (
       id              SERIAL PRIMARY KEY,
