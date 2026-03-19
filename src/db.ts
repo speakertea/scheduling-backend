@@ -78,10 +78,9 @@ export async function createTables() {
       created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id);
-    CREATE INDEX IF NOT EXISTS idx_events_start ON events(user_id, start_at);
-
     DO $$ BEGIN
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS user_id TEXT;
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS start_at TEXT;
       ALTER TABLE events ADD COLUMN IF NOT EXISTS notified BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE events ADD COLUMN IF NOT EXISTS recurrence_rule TEXT;
       ALTER TABLE events ADD COLUMN IF NOT EXISTS recurrence_end_date TEXT;
@@ -89,7 +88,19 @@ export async function createTables() {
       ALTER TABLE events ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
-    CREATE INDEX IF NOT EXISTS idx_events_updated ON events(user_id, updated_at);
+    DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'events' AND column_name = 'user_id') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id)';
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'events' AND column_name = 'user_id')
+         AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'events' AND column_name = 'start_at') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_events_start ON events(user_id, start_at)';
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'events' AND column_name = 'user_id')
+         AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'events' AND column_name = 'updated_at') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_events_updated ON events(user_id, updated_at)';
+      END IF;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS groups_ (
       id            TEXT PRIMARY KEY,
@@ -129,13 +140,21 @@ export async function createTables() {
     );
 
     DO $$ BEGIN
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS user_id TEXT;
       ALTER TABLE invites ADD COLUMN IF NOT EXISTS thread_id TEXT;
       ALTER TABLE invites ADD COLUMN IF NOT EXISTS sender_user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
       ALTER TABLE invites ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
-    CREATE INDEX IF NOT EXISTS idx_invites_user_updated ON invites(user_id, updated_at);
-    CREATE INDEX IF NOT EXISTS idx_invites_thread ON invites(thread_id);
+    DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'invites' AND column_name = 'user_id')
+         AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'invites' AND column_name = 'updated_at') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_invites_user_updated ON invites(user_id, updated_at)';
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'invites' AND column_name = 'thread_id') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_invites_thread ON invites(thread_id)';
+      END IF;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS invite_attendees (
       id        SERIAL PRIMARY KEY,
@@ -145,11 +164,14 @@ export async function createTables() {
       status    TEXT CHECK(status IN ('yes','maybe','no')),
       is_friend BOOLEAN NOT NULL DEFAULT FALSE
     );
-    CREATE INDEX IF NOT EXISTS idx_invite_attendees_user ON invite_attendees(user_id);
-
     DO $$ BEGIN
       ALTER TABLE invite_attendees ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
     EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
+    DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'invite_attendees' AND column_name = 'user_id') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_invite_attendees_user ON invite_attendees(user_id)';
+      END IF;
     END $$;
 
     CREATE TABLE IF NOT EXISTS calendar_events (
@@ -173,13 +195,21 @@ export async function createTables() {
     );
 
     DO $$ BEGIN
+      ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS user_id TEXT;
       ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS thread_id TEXT;
       ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS sender_user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
       ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
-    CREATE INDEX IF NOT EXISTS idx_calendar_events_user_updated ON calendar_events(user_id, updated_at);
-    CREATE INDEX IF NOT EXISTS idx_calendar_events_thread ON calendar_events(thread_id);
+    DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'calendar_events' AND column_name = 'user_id')
+         AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'calendar_events' AND column_name = 'updated_at') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_calendar_events_user_updated ON calendar_events(user_id, updated_at)';
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'calendar_events' AND column_name = 'thread_id') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_calendar_events_thread ON calendar_events(thread_id)';
+      END IF;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS notification_dismissals (
       id              SERIAL PRIMARY KEY,
@@ -217,8 +247,14 @@ export async function createTables() {
       replaced_by TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    CREATE INDEX IF NOT EXISTS idx_refresh_sessions_user ON refresh_sessions(user_id);
-    CREATE INDEX IF NOT EXISTS idx_refresh_sessions_expires ON refresh_sessions(expires_at);
+    DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'refresh_sessions' AND column_name = 'user_id') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_refresh_sessions_user ON refresh_sessions(user_id)';
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'refresh_sessions' AND column_name = 'expires_at') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_refresh_sessions_expires ON refresh_sessions(expires_at)';
+      END IF;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS deleted_entities (
       id          SERIAL PRIMARY KEY,
@@ -228,7 +264,12 @@ export async function createTables() {
       payload_json TEXT,
       deleted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    CREATE INDEX IF NOT EXISTS idx_deleted_entities_user_deleted ON deleted_entities(user_id, deleted_at);
+    DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deleted_entities' AND column_name = 'user_id')
+         AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deleted_entities' AND column_name = 'deleted_at') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_deleted_entities_user_deleted ON deleted_entities(user_id, deleted_at)';
+      END IF;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS audit_logs (
       id         SERIAL PRIMARY KEY,
@@ -258,7 +299,11 @@ export async function createTables() {
       created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE(user_id, friend_user_id)
     );
-    CREATE INDEX IF NOT EXISTS idx_friend_conn_user ON friend_connections(user_id);
+    DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'friend_connections' AND column_name = 'user_id') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_friend_conn_user ON friend_connections(user_id)';
+      END IF;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS friend_requests (
       id           TEXT PRIMARY KEY,
