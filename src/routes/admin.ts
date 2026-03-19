@@ -560,27 +560,219 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
     };
   })
 
+  .get("/sponsored-events/analytics", async () => {
+    const [
+      summaryResult,
+      trendResult,
+      sponsorResult,
+      campaignResult,
+      geographyResult,
+      statusResult,
+    ] = await Promise.all([
+      query(`
+        SELECT
+          COUNT(*)::int AS total_campaigns,
+          COUNT(*) FILTER (WHERE status = 'sent')::int AS sent_campaigns,
+          COUNT(*) FILTER (WHERE status = 'scheduled')::int AS scheduled_campaigns,
+          COUNT(*) FILTER (WHERE status = 'draft')::int AS draft_campaigns,
+          COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_campaigns,
+          COALESCE(SUM(total_targeted), 0)::int AS total_targeted,
+          COALESCE(SUM(total_sent), 0)::int AS total_sent,
+          COALESCE(SUM(total_opened), 0)::int AS total_opened,
+          COALESCE(SUM(total_rsvp), 0)::int AS total_rsvp
+        FROM sponsored_events
+      `),
+      query(`
+        SELECT
+          TO_CHAR(DATE_TRUNC('week', COALESCE(sent_at, created_at)), 'Mon DD') AS label,
+          DATE_TRUNC('week', COALESCE(sent_at, created_at)) AS sort_date,
+          COUNT(*)::int AS campaigns,
+          COALESCE(SUM(total_targeted), 0)::int AS targeted,
+          COALESCE(SUM(total_sent), 0)::int AS sent,
+          COALESCE(SUM(total_opened), 0)::int AS opened,
+          COALESCE(SUM(total_rsvp), 0)::int AS rsvp
+        FROM sponsored_events
+        WHERE COALESCE(sent_at, created_at) >= NOW() - INTERVAL '12 weeks'
+        GROUP BY 1, 2
+        ORDER BY sort_date ASC
+      `),
+      query(`
+        SELECT
+          COALESCE(NULLIF(TRIM(sponsor_name), ''), 'Collabo Direct') AS sponsor_name,
+          COUNT(*)::int AS campaigns,
+          COALESCE(SUM(total_sent), 0)::int AS sent,
+          COALESCE(SUM(total_opened), 0)::int AS opened,
+          COALESCE(SUM(total_rsvp), 0)::int AS rsvp,
+          CASE WHEN COALESCE(SUM(total_sent), 0) > 0
+            THEN ROUND(COALESCE(SUM(total_opened), 0)::numeric / SUM(total_sent) * 100, 1)
+            ELSE 0 END AS open_rate,
+          CASE WHEN COALESCE(SUM(total_sent), 0) > 0
+            THEN ROUND(COALESCE(SUM(total_rsvp), 0)::numeric / SUM(total_sent) * 100, 1)
+            ELSE 0 END AS rsvp_rate
+        FROM sponsored_events
+        GROUP BY 1
+        ORDER BY sent DESC, campaigns DESC
+        LIMIT 8
+      `),
+      query(`
+        SELECT
+          id,
+          title,
+          COALESCE(NULLIF(TRIM(sponsor_name), ''), 'Collabo Direct') AS sponsor_name,
+          status,
+          total_targeted,
+          total_sent,
+          total_opened,
+          total_rsvp,
+          CASE WHEN total_sent > 0 THEN ROUND(total_opened::numeric / total_sent * 100, 1) ELSE 0 END AS open_rate,
+          CASE WHEN total_sent > 0 THEN ROUND(total_rsvp::numeric / total_sent * 100, 1) ELSE 0 END AS rsvp_rate
+        FROM sponsored_events
+        WHERE status = 'sent'
+        ORDER BY rsvp_rate DESC, open_rate DESC, total_sent DESC
+        LIMIT 6
+      `),
+      query(`
+        SELECT
+          COALESCE(u.city, u.region, 'Unknown') AS label,
+          COUNT(*)::int AS delivered,
+          COUNT(*) FILTER (WHERE sed.opened = TRUE)::int AS opened,
+          COUNT(ser.id)::int AS rsvp
+        FROM sponsored_event_deliveries sed
+        JOIN users u ON u.id = sed.user_id
+        LEFT JOIN sponsored_event_rsvps ser
+          ON ser.sponsored_event_id = sed.sponsored_event_id
+         AND ser.user_id = sed.user_id
+         AND ser.rsvp_status IN ('going', 'interested')
+        GROUP BY 1
+        ORDER BY delivered DESC
+        LIMIT 10
+      `),
+      query(`
+        SELECT status, COUNT(*)::int AS count
+        FROM sponsored_events
+        GROUP BY status
+        ORDER BY count DESC
+      `),
+    ]);
+
+    const summary = summaryResult.rows[0] || {};
+    const totalSent = Number(summary.total_sent || 0);
+    const totalOpened = Number(summary.total_opened || 0);
+    const totalRsvp = Number(summary.total_rsvp || 0);
+
+    return {
+      summary: {
+        totalCampaigns: Number(summary.total_campaigns || 0),
+        sentCampaigns: Number(summary.sent_campaigns || 0),
+        scheduledCampaigns: Number(summary.scheduled_campaigns || 0),
+        draftCampaigns: Number(summary.draft_campaigns || 0),
+        cancelledCampaigns: Number(summary.cancelled_campaigns || 0),
+        totalTargeted: Number(summary.total_targeted || 0),
+        totalSent,
+        totalOpened,
+        totalRsvp,
+        openRate: totalSent > 0 ? Number(((totalOpened / totalSent) * 100).toFixed(1)) : 0,
+        rsvpRate: totalSent > 0 ? Number(((totalRsvp / totalSent) * 100).toFixed(1)) : 0,
+        openToRsvpRate: totalOpened > 0 ? Number(((totalRsvp / totalOpened) * 100).toFixed(1)) : 0,
+      },
+      trends: trendResult.rows.map((row: any) => ({
+        label: row.label,
+        campaigns: row.campaigns,
+        targeted: row.targeted,
+        sent: row.sent,
+        opened: row.opened,
+        rsvp: row.rsvp,
+      })),
+      topSponsors: sponsorResult.rows.map((row: any) => ({
+        sponsorName: row.sponsor_name,
+        campaigns: row.campaigns,
+        sent: row.sent,
+        opened: row.opened,
+        rsvp: row.rsvp,
+        openRate: Number(row.open_rate || 0),
+        rsvpRate: Number(row.rsvp_rate || 0),
+      })),
+      topCampaigns: campaignResult.rows.map((row: any) => ({
+        id: row.id,
+        title: row.title,
+        sponsorName: row.sponsor_name,
+        status: row.status,
+        totalTargeted: row.total_targeted,
+        totalSent: row.total_sent,
+        totalOpened: row.total_opened,
+        totalRsvp: row.total_rsvp,
+        openRate: Number(row.open_rate || 0),
+        rsvpRate: Number(row.rsvp_rate || 0),
+      })),
+      geography: geographyResult.rows.map((row: any) => ({
+        label: row.label,
+        delivered: row.delivered,
+        opened: row.opened,
+        rsvp: row.rsvp,
+      })),
+      statusBreakdown: statusResult.rows.map((row: any) => ({
+        status: row.status,
+        count: row.count,
+      })),
+    };
+  })
+
   /* Sponsored event detail */
   .get("/sponsored-events/:id", async ({ params, set }) => {
     const { rows } = await query("SELECT * FROM sponsored_events WHERE id = $1", [params.id]);
     if (rows.length === 0) { set.status = 404; return { error: "Not found" }; }
     const e = rows[0];
 
-    const { rows: rsvps } = await query(`
+    const [{ rows: rsvps }, { rows: deliveryStats }, { rows: cityRows }, { rows: timelineRows }] = await Promise.all([
+      query(`
       SELECT rsvp_status, COUNT(*)::int as count
       FROM sponsored_event_rsvps WHERE sponsored_event_id = $1
       GROUP BY rsvp_status
-    `, [params.id]);
-
-    const { rows: deliveryStats } = await query(`
+    `, [params.id]),
+      query(`
       SELECT COUNT(*)::int as total,
         COUNT(CASE WHEN delivered THEN 1 END)::int as delivered,
         COUNT(CASE WHEN opened THEN 1 END)::int as opened
       FROM sponsored_event_deliveries WHERE sponsored_event_id = $1
-    `, [params.id]);
+    `, [params.id]),
+      query(`
+      SELECT
+        COALESCE(u.city, u.region, 'Unknown') AS label,
+        COUNT(*)::int AS delivered,
+        COUNT(*) FILTER (WHERE sed.opened = TRUE)::int AS opened,
+        COUNT(ser.id)::int AS rsvp
+      FROM sponsored_event_deliveries sed
+      JOIN users u ON u.id = sed.user_id
+      LEFT JOIN sponsored_event_rsvps ser
+        ON ser.sponsored_event_id = sed.sponsored_event_id
+       AND ser.user_id = sed.user_id
+       AND ser.rsvp_status IN ('going', 'interested')
+      WHERE sed.sponsored_event_id = $1
+      GROUP BY 1
+      ORDER BY delivered DESC
+      LIMIT 8
+    `, [params.id]),
+      query(`
+      SELECT
+        TO_CHAR(DATE_TRUNC('day', sed.delivered_at), 'Mon DD') AS label,
+        DATE_TRUNC('day', sed.delivered_at) AS sort_date,
+        COUNT(*)::int AS delivered,
+        COUNT(*) FILTER (WHERE sed.opened = TRUE)::int AS opened,
+        COUNT(ser.id)::int AS rsvp
+      FROM sponsored_event_deliveries sed
+      LEFT JOIN sponsored_event_rsvps ser
+        ON ser.sponsored_event_id = sed.sponsored_event_id
+       AND ser.user_id = sed.user_id
+       AND ser.rsvp_status IN ('going', 'interested')
+      WHERE sed.sponsored_event_id = $1
+      GROUP BY 1, 2
+      ORDER BY sort_date ASC
+    `, [params.id]),
+    ]);
 
     const rsvpBreakdown: Record<string, number> = {};
     for (const r of rsvps) rsvpBreakdown[r.rsvp_status] = r.count;
+    const delivery = (deliveryStats as any)?.rows?.[0] || { total: 0, delivered: 0, opened: 0 };
 
     return {
       event: {
@@ -596,7 +788,28 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
         rsvp_interested: rsvpBreakdown["interested"] || 0,
         rsvp_not_going: rsvpBreakdown["not_going"] || 0,
         rsvpBreakdown,
-        delivery: (deliveryStats as any)?.rows?.[0] || { total: 0, delivered: 0, opened: 0 },
+        delivery,
+        funnel: {
+          targeted: e.total_targeted || 0,
+          sent: e.total_sent || 0,
+          opened: e.total_opened || 0,
+          rsvp: e.total_rsvp || 0,
+          openRate: e.total_sent > 0 ? Number(((e.total_opened / e.total_sent) * 100).toFixed(1)) : 0,
+          rsvpRate: e.total_sent > 0 ? Number(((e.total_rsvp / e.total_sent) * 100).toFixed(1)) : 0,
+          openToRsvpRate: e.total_opened > 0 ? Number(((e.total_rsvp / e.total_opened) * 100).toFixed(1)) : 0,
+        },
+        topCities: cityRows.map((row: any) => ({
+          label: row.label,
+          delivered: row.delivered,
+          opened: row.opened,
+          rsvp: row.rsvp,
+        })),
+        timeline: timelineRows.map((row: any) => ({
+          label: row.label,
+          delivered: row.delivered,
+          opened: row.opened,
+          rsvp: row.rsvp,
+        })),
       },
     };
   })
