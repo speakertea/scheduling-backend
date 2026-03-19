@@ -1,12 +1,68 @@
 import { Elysia, t } from "elysia";
 import { query } from "../db";
 import { authGuard } from "./guard";
+import { sendGroupJoinRequestPush, sendJoinRequestOutcomePush } from "../notifications";
+
+type BusyRange = {
+  start: Date;
+  end: Date;
+};
 
 function generateInviteCode(): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
   let code = "";
   for (let i = 0; i < 8; i++) code += chars[Math.floor(Math.random() * chars.length)];
   return code;
+}
+
+function clampPositiveInt(value: unknown, fallback: number, max = 365) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.round(parsed), 1), max);
+}
+
+function buildGroupSuggestions(rangesByUser: Map<string, BusyRange[]>, memberIds: string[], durationMinutes: number) {
+  const suggestions: Array<{ startAt: string; endAt: string; availableCount: number; unavailableCount: number }> = [];
+  const durationMs = durationMinutes * 60_000;
+  const now = new Date();
+  const base = new Date(now);
+  base.setMinutes(base.getMinutes() < 30 ? 30 : 60, 0, 0);
+
+  for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
+    const dayStart = new Date(base);
+    dayStart.setDate(base.getDate() + dayOffset);
+    dayStart.setHours(8, 0, 0, 0);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setHours(22, 0, 0, 0);
+
+    for (let cursor = new Date(dayStart); cursor.getTime() + durationMs <= dayEnd.getTime(); cursor = new Date(cursor.getTime() + 30 * 60_000)) {
+      if (cursor.getTime() < now.getTime()) continue;
+      const slotEnd = new Date(cursor.getTime() + durationMs);
+      let availableCount = 0;
+
+      for (const memberId of memberIds) {
+        const ranges = rangesByUser.get(memberId) ?? [];
+        const busy = ranges.some((range) => range.start < slotEnd && range.end > cursor);
+        if (!busy) availableCount += 1;
+      }
+
+      if (availableCount === 0) continue;
+
+      suggestions.push({
+        startAt: cursor.toISOString(),
+        endAt: slotEnd.toISOString(),
+        availableCount,
+        unavailableCount: memberIds.length - availableCount,
+      });
+    }
+  }
+
+  return suggestions
+    .sort((a, b) => {
+      if (b.availableCount !== a.availableCount) return b.availableCount - a.availableCount;
+      return new Date(a.startAt).getTime() - new Date(b.startAt).getTime();
+    })
+    .slice(0, 5);
 }
 
 export const peopleRoutes = new Elysia({ prefix: "/people" })
@@ -233,7 +289,7 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
   // List groups user belongs to
   .get("/groups", async ({ userId }) => {
     const { rows } = await query(
-      `SELECT g.id, g.name, gm.role,
+      `SELECT g.id, g.name, g.group_photo AS "groupPhoto", gm.role,
               (SELECT COUNT(*) FROM group_memberships WHERE group_id = g.id)::int AS "memberCount"
        FROM group_memberships gm
        JOIN groups_ g ON g.id = gm.group_id
@@ -251,7 +307,7 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
 
     const groupId = crypto.randomUUID();
     await query(
-      "INSERT INTO groups_ (id, name, total_members) VALUES ($1, $2, 1)",
+      "INSERT INTO groups_ (id, name, total_members, group_photo) VALUES ($1, $2, 1, '')",
       [groupId, name]
     );
     await query(
@@ -259,7 +315,7 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
       [crypto.randomUUID(), groupId, userId]
     );
     set.status = 201;
-    return { id: groupId, name, memberCount: 1, role: "admin" };
+    return { id: groupId, name, groupPhoto: "", memberCount: 1, role: "admin" };
   }, {
     body: t.Object({ name: t.String() }),
   })
@@ -267,7 +323,7 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
   // Group detail
   .get("/groups/:id", async ({ userId, params, set }) => {
     const { rows: groups } = await query(
-      "SELECT id, name FROM groups_ WHERE id = $1",
+      "SELECT id, name, group_photo AS \"groupPhoto\" FROM groups_ WHERE id = $1",
       [params.id]
     );
     if (groups.length === 0) { set.status = 404; return { error: "Group not found." }; }
@@ -286,9 +342,68 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
     return {
       id: group.id,
       name: group.name,
+      groupPhoto: group.groupPhoto,
       memberCount: members.length,
       currentUserRole: currentMember?.role ?? null,
       members,
+    };
+  })
+
+  .patch("/groups/:id/photo", async ({ userId, params, body, set }) => {
+    const { rows: membership } = await query(
+      "SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0 || membership[0].role !== "admin") {
+      set.status = 403;
+      return { error: "Only group admins can update the group photo." };
+    }
+
+    const groupPhoto = body.groupPhoto.trim();
+    await query("UPDATE groups_ SET group_photo = $1 WHERE id = $2", [groupPhoto, params.id]);
+    return { success: true, groupPhoto };
+  }, {
+    body: t.Object({ groupPhoto: t.String() }),
+  })
+
+  .get("/groups/:id/suggest-times", async ({ userId, params, query: qs, set }) => {
+    const { rows: membership } = await query(
+      "SELECT user_id FROM group_memberships WHERE group_id = $1",
+      [params.id]
+    );
+    if (membership.length === 0 || !membership.some((row: any) => row.user_id === userId)) {
+      set.status = 403;
+      return { error: "You must be a member of this group." };
+    }
+
+    const memberIds = membership.map((row: any) => row.user_id);
+    const durationMinutes = clampPositiveInt((qs as any)?.durationMinutes, 60, 240);
+    const until = new Date();
+    until.setDate(until.getDate() + 7);
+
+    const { rows: events } = await query(
+      `SELECT user_id, start_at, end_at
+       FROM events
+       WHERE user_id = ANY($1::text[])
+         AND start_at < $2
+         AND end_at > $3`,
+      [memberIds, until.toISOString(), new Date().toISOString()]
+    );
+
+    const rangesByUser = new Map<string, BusyRange[]>();
+    for (const row of events as any[]) {
+      const start = new Date(row.start_at);
+      const end = new Date(row.end_at);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) continue;
+      const existing = rangesByUser.get(row.user_id) ?? [];
+      existing.push({ start, end });
+      rangesByUser.set(row.user_id, existing);
+    }
+
+    return {
+      durationMinutes,
+      memberCount: memberIds.length,
+      suggestions: buildGroupSuggestions(rangesByUser, memberIds, durationMinutes),
     };
   })
 
@@ -433,6 +548,8 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
 
     const { rows } = await query(
       `SELECT gl.id, gl.code, gl.created_at,
+              gl.expires_at AS "expiresAt", gl.max_uses AS "maxUses", gl.use_count AS "useCount",
+              gl.requires_approval AS "requiresApproval", gl.is_active AS "isActive",
               u.id AS creator_id, u.name AS creator_name, u.username AS creator_username
        FROM group_invite_links gl
        JOIN users u ON u.id = gl.created_by
@@ -445,6 +562,11 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
       code: r.code,
       link: `https://collabo.cloud/join/${r.code}`,
       createdAt: r.created_at,
+      expiresAt: r.expiresAt,
+      maxUses: r.maxUses,
+      useCount: r.useCount,
+      requiresApproval: r.requiresApproval,
+      isActive: r.isActive,
       createdBy: { id: r.creator_id, name: r.creator_name, username: r.creator_username },
     }));
   })
@@ -471,7 +593,7 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
   })
 
   // Generate (or retrieve existing) invite link for a group — any member can share
-  .post("/groups/:id/invite-link", async ({ userId, params, set }) => {
+  .post("/groups/:id/invite-link", async ({ userId, params, body, set }) => {
     const { rows: membership } = await query(
       "SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2",
       [params.id, userId]
@@ -481,13 +603,35 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
       return { error: "You must be a member of this group." };
     }
 
-    // Re-use existing active link if one exists
-    const { rows: existing } = await query(
-      "SELECT code FROM group_invite_links WHERE group_id = $1 AND is_active = TRUE ORDER BY created_at DESC LIMIT 1",
-      [params.id]
-    );
-    if (existing.length > 0) {
-      return { code: existing[0].code, link: `https://collabo.cloud/join/${existing[0].code}` };
+    const expiresInDays = body.expiresInDays ? clampPositiveInt(body.expiresInDays, 7, 90) : null;
+    const maxUses = body.maxUses ? clampPositiveInt(body.maxUses, 10, 500) : null;
+    const requiresApproval = Boolean(body.requiresApproval);
+    const rotate = Boolean(body.rotate);
+
+    if (rotate) {
+      await query(
+        "UPDATE group_invite_links SET is_active = FALSE WHERE group_id = $1 AND is_active = TRUE",
+        [params.id]
+      );
+    } else {
+      const { rows: existing } = await query(
+        `SELECT code, expires_at AS "expiresAt", max_uses AS "maxUses", use_count AS "useCount", requires_approval AS "requiresApproval"
+         FROM group_invite_links
+         WHERE group_id = $1 AND is_active = TRUE
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [params.id]
+      );
+      if (
+        existing.length > 0 &&
+        existing[0].expiresAt === null &&
+        existing[0].maxUses === null &&
+        existing[0].requiresApproval === requiresApproval &&
+        expiresInDays === null &&
+        maxUses === null
+      ) {
+        return { code: existing[0].code, link: `https://collabo.cloud/join/${existing[0].code}` };
+      }
     }
 
     // Generate unique code
@@ -498,12 +642,169 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
       code = generateInviteCode();
     }
 
+    const expiresAt = expiresInDays ? new Date(Date.now() + expiresInDays * 86_400_000).toISOString() : null;
     await query(
-      "INSERT INTO group_invite_links (id, group_id, code, created_by) VALUES ($1, $2, $3, $4)",
-      [crypto.randomUUID(), params.id, code, userId]
+      `INSERT INTO group_invite_links (id, group_id, code, created_by, expires_at, max_uses, requires_approval)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [crypto.randomUUID(), params.id, code, userId, expiresAt, maxUses, requiresApproval]
     );
     set.status = 201;
-    return { code, link: `https://collabo.cloud/join/${code}` };
+    return { code, link: `https://collabo.cloud/join/${code}`, expiresAt, maxUses, requiresApproval };
+  }, {
+    body: t.Object({
+      expiresInDays: t.Optional(t.Nullable(t.Numeric())),
+      maxUses: t.Optional(t.Nullable(t.Numeric())),
+      requiresApproval: t.Optional(t.Boolean()),
+      rotate: t.Optional(t.Boolean()),
+    }),
+  })
+
+  .get("/groups/:id/join-requests", async ({ userId, params, set }) => {
+    const { rows: membership } = await query(
+      "SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0 || membership[0].role !== "admin") {
+      set.status = 403;
+      return { error: "Only group admins can review join requests." };
+    }
+
+    const { rows } = await query(
+      `SELECT gjr.id, gjr.created_at AS "createdAt",
+              u.id AS "userId", u.name, u.username, u.profile_picture AS "profilePicture"
+       FROM group_join_requests gjr
+       JOIN users u ON u.id = gjr.user_id
+       WHERE gjr.group_id = $1 AND gjr.status = 'pending'
+       ORDER BY gjr.created_at ASC`,
+      [params.id]
+    );
+    return rows.map((row: any) => ({
+      id: row.id,
+      createdAt: row.createdAt,
+      user: {
+        id: row.userId,
+        name: row.name,
+        username: row.username,
+        profilePicture: row.profilePicture,
+      },
+    }));
+  })
+
+  .post("/groups/:id/join-requests/:requestId/approve", async ({ userId, params, set }) => {
+    const { rows: membership } = await query(
+      "SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0 || membership[0].role !== "admin") {
+      set.status = 403;
+      return { error: "Only group admins can approve join requests." };
+    }
+
+    const { rows: requests } = await query(
+      `SELECT user_id, link_id
+       FROM group_join_requests
+       WHERE id = $1 AND group_id = $2 AND status = 'pending'`,
+      [params.requestId, params.id]
+    );
+    if (requests.length === 0) {
+      set.status = 404;
+      return { error: "Join request not found." };
+    }
+
+    const request = requests[0];
+    const { rows: groupRows } = await query("SELECT name FROM groups_ WHERE id = $1", [params.id]);
+    const groupName = groupRows[0]?.name || "this group";
+    await query(
+      `INSERT INTO group_memberships (id, group_id, user_id, role)
+       VALUES ($1, $2, $3, 'member')
+       ON CONFLICT (group_id, user_id) DO NOTHING`,
+      [crypto.randomUUID(), params.id, request.user_id]
+    );
+    await query(
+      `UPDATE group_join_requests
+       SET status = 'approved', reviewed_at = NOW(), reviewed_by = $1
+       WHERE id = $2`,
+      [userId, params.requestId]
+    );
+    if (request.link_id) {
+      await query("UPDATE group_invite_links SET use_count = use_count + 1 WHERE id = $1", [request.link_id]);
+    }
+    await query(
+      "UPDATE groups_ SET total_members = (SELECT COUNT(*) FROM group_memberships WHERE group_id = $1) WHERE id = $1",
+      [params.id]
+    );
+    await sendJoinRequestOutcomePush(request.user_id, { approved: true, groupName });
+    return { success: true };
+  })
+
+  .post("/groups/:id/join-requests/:requestId/decline", async ({ userId, params, set }) => {
+    const { rows: membership } = await query(
+      "SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0 || membership[0].role !== "admin") {
+      set.status = 403;
+      return { error: "Only group admins can decline join requests." };
+    }
+    const { rows: requestRows } = await query(
+      "SELECT user_id FROM group_join_requests WHERE id = $1 AND group_id = $2 AND status = 'pending'",
+      [params.requestId, params.id]
+    );
+    if (requestRows.length === 0) {
+      set.status = 404;
+      return { error: "Join request not found." };
+    }
+    const { rows: groupRows } = await query("SELECT name FROM groups_ WHERE id = $1", [params.id]);
+    const groupName = groupRows[0]?.name || "this group";
+    const result = await query(
+      `UPDATE group_join_requests
+       SET status = 'declined', reviewed_at = NOW(), reviewed_by = $1
+       WHERE id = $2 AND group_id = $3 AND status = 'pending'`,
+      [userId, params.requestId, params.id]
+    );
+    if ((result.rowCount ?? 0) === 0) {
+      set.status = 404;
+      return { error: "Join request not found." };
+    }
+    await sendJoinRequestOutcomePush(requestRows[0].user_id, { approved: false, groupName });
+    return { success: true };
+  })
+
+  .get("/groups/:id/notification-settings", async ({ userId, params, set }) => {
+    const { rows: membership } = await query(
+      "SELECT id FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0) {
+      set.status = 403;
+      return { error: "You must be a member of this group." };
+    }
+    const { rows } = await query(
+      "SELECT level FROM group_notification_settings WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    return { level: rows[0]?.level ?? "all" };
+  })
+
+  .patch("/groups/:id/notification-settings", async ({ userId, params, body, set }) => {
+    const { rows: membership } = await query(
+      "SELECT id FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0) {
+      set.status = 403;
+      return { error: "You must be a member of this group." };
+    }
+    await query(
+      `INSERT INTO group_notification_settings (id, group_id, user_id, level)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (group_id, user_id)
+       DO UPDATE SET level = EXCLUDED.level, updated_at = NOW()`,
+      [crypto.randomUUID(), params.id, userId, body.level]
+    );
+    return { success: true, level: body.level };
+  }, {
+    body: t.Object({ level: t.Union([t.Literal("all"), t.Literal("highlights"), t.Literal("mute")]) }),
   })
 
   // Revoke all invite links for a group (admin only)
@@ -530,7 +831,8 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
   // Join a group via invite code
   .post("/join/:code", async ({ userId, params, set }) => {
     const { rows: links } = await query(
-      `SELECT gl.group_id, g.name AS group_name
+      `SELECT gl.id, gl.group_id, g.name AS group_name, gl.requires_approval AS "requiresApproval",
+              gl.expires_at AS "expiresAt", gl.max_uses AS "maxUses", gl.use_count AS "useCount"
        FROM group_invite_links gl
        JOIN groups_ g ON g.id = gl.group_id
        WHERE gl.code = $1 AND gl.is_active = TRUE`,
@@ -540,7 +842,16 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
       set.status = 404;
       return { error: "Invite link is invalid or has been revoked." };
     }
-    const { group_id, group_name } = links[0];
+    const { id: linkId, group_id, group_name, requiresApproval, expiresAt, maxUses, useCount } = links[0];
+
+    if (expiresAt && new Date(expiresAt).getTime() <= Date.now()) {
+      set.status = 410;
+      return { error: "Invite link has expired." };
+    }
+    if (maxUses !== null && useCount >= maxUses) {
+      set.status = 410;
+      return { error: "Invite link has reached its limit." };
+    }
 
     // Already a member?
     const { rows: existing } = await query(
@@ -551,10 +862,38 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
       return { alreadyMember: true, groupId: group_id, groupName: group_name };
     }
 
+    if (requiresApproval) {
+      const { rows: pending } = await query(
+        "SELECT id FROM group_join_requests WHERE group_id = $1 AND user_id = $2 AND status = 'pending'",
+        [group_id, userId]
+      );
+      if (pending.length === 0) {
+        await query(
+          `INSERT INTO group_join_requests (id, group_id, user_id, link_id, status)
+           VALUES ($1, $2, $3, $4, 'pending')`,
+          [crypto.randomUUID(), group_id, userId, linkId]
+        );
+        const { rows: requesterRows } = await query("SELECT name FROM users WHERE id = $1", [userId]);
+        const requesterName = requesterRows[0]?.name || "Someone";
+        const { rows: adminRows } = await query(
+          "SELECT user_id FROM group_memberships WHERE group_id = $1 AND role = 'admin'",
+          [group_id]
+        );
+        await sendGroupJoinRequestPush(
+          group_id,
+          requesterName,
+          group_name,
+          adminRows.map((row: any) => row.user_id).filter((adminId: string) => adminId !== userId)
+        );
+      }
+      return { pendingApproval: true, groupId: group_id, groupName: group_name };
+    }
+
     await query(
       "INSERT INTO group_memberships (id, group_id, user_id, role) VALUES ($1, $2, $3, 'member')",
       [crypto.randomUUID(), group_id, userId]
     );
+    await query("UPDATE group_invite_links SET use_count = use_count + 1 WHERE id = $1", [linkId]);
     await query(
       "UPDATE groups_ SET total_members = (SELECT COUNT(*) FROM group_memberships WHERE group_id = $1) WHERE id = $1",
       [group_id]

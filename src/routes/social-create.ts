@@ -3,6 +3,7 @@ import { query } from "../db";
 import { authGuard } from "./guard";
 import { sanitizeTitle, sanitizeLocation, sanitizeNotes } from "../utils";
 import { broadcastToUser } from "../broadcast";
+import { sendGroupInvitePush } from "../notifications";
 
 async function buildInviteResponse(inviteId: string) {
   const { rows } = await query("SELECT * FROM invites WHERE id = $1", [inviteId]);
@@ -127,6 +128,14 @@ export const socialCreateRoutes = new Elysia({ prefix: "/social/create" })
         broadcastToUser(uniqueRecipients[index].id, { type: "invite_upsert", payload });
       }
 
+      if (isGroup && selectedGroupId && groupName) {
+        await sendGroupInvitePush(
+          selectedGroupId,
+          uniqueRecipients.filter((recipient) => recipient.id !== sender.id).map((recipient) => recipient.id),
+          { groupName, title, startAt, type: "social" }
+        );
+      }
+
       set.status = 201;
       return { success: true, threadId, eventType, sendTo };
     }
@@ -147,6 +156,14 @@ export const socialCreateRoutes = new Elysia({ prefix: "/social/create" })
 
     for (const row of createdCalendarRows) {
       broadcastToUser(row.user_id, { type: "calendar_event_upsert", payload: toCalendarEvent(row) });
+    }
+
+    if (isGroup && selectedGroupId && groupName) {
+      await sendGroupInvitePush(
+        selectedGroupId,
+        uniqueRecipients.filter((recipient) => recipient.id !== sender.id).map((recipient) => recipient.id),
+        { groupName, title, startAt, type: "calendar" }
+      );
     }
 
     set.status = 201;

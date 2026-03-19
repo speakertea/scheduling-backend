@@ -105,8 +105,13 @@ export async function createTables() {
     CREATE TABLE IF NOT EXISTS groups_ (
       id            TEXT PRIMARY KEY,
       name          TEXT NOT NULL,
-      total_members INTEGER NOT NULL
+      total_members INTEGER NOT NULL,
+      group_photo   TEXT NOT NULL DEFAULT ''
     );
+    DO $$ BEGIN
+      ALTER TABLE groups_ ADD COLUMN IF NOT EXISTS group_photo TEXT NOT NULL DEFAULT '';
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS group_members (
       id       TEXT PRIMARY KEY,
@@ -362,9 +367,43 @@ export async function createTables() {
       code       TEXT NOT NULL UNIQUE,
       created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       is_active  BOOLEAN NOT NULL DEFAULT TRUE,
+      expires_at TIMESTAMPTZ,
+      max_uses   INTEGER,
+      use_count  INTEGER NOT NULL DEFAULT 0,
+      requires_approval BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    DO $$ BEGIN
+      ALTER TABLE group_invite_links ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+      ALTER TABLE group_invite_links ADD COLUMN IF NOT EXISTS max_uses INTEGER;
+      ALTER TABLE group_invite_links ADD COLUMN IF NOT EXISTS use_count INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE group_invite_links ADD COLUMN IF NOT EXISTS requires_approval BOOLEAN NOT NULL DEFAULT FALSE;
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
     CREATE INDEX IF NOT EXISTS idx_group_invite_links_code ON group_invite_links(code);
+
+    CREATE TABLE IF NOT EXISTS group_join_requests (
+      id         TEXT PRIMARY KEY,
+      group_id   TEXT NOT NULL REFERENCES groups_(id) ON DELETE CASCADE,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      link_id    TEXT REFERENCES group_invite_links(id) ON DELETE SET NULL,
+      status     TEXT NOT NULL CHECK(status IN ('pending','approved','declined')) DEFAULT 'pending',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      reviewed_at TIMESTAMPTZ,
+      reviewed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      UNIQUE(group_id, user_id, status)
+    );
+    CREATE INDEX IF NOT EXISTS idx_group_join_requests_group ON group_join_requests(group_id, status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS group_notification_settings (
+      id         TEXT PRIMARY KEY,
+      group_id   TEXT NOT NULL REFERENCES groups_(id) ON DELETE CASCADE,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      level      TEXT NOT NULL CHECK(level IN ('all','highlights','mute')) DEFAULT 'all',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(group_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_group_notification_settings_user ON group_notification_settings(user_id);
 
     CREATE TABLE IF NOT EXISTS sponsored_event_deliveries (
       id                 TEXT PRIMARY KEY,
