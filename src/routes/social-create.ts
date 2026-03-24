@@ -48,7 +48,7 @@ export const socialCreateRoutes = new Elysia({ prefix: "/social/create" })
   .use(authGuard)
 
   .post("/", async ({ userId, body, set }) => {
-    const { eventType, sendTo, selectedGroupId, selectedFriendIds, title: rawTitle, location: rawLocation, date, startTime, endTime, notes: rawNotes } = body;
+    const { eventType, sendTo, selectedGroupId, selectedFriendIds, title: rawTitle, location: rawLocation, date, startTime, endTime, notes: rawNotes, recurrenceRule, recurrenceEndDate } = body;
     const title = sanitizeTitle(rawTitle);
     const location = sanitizeLocation(rawLocation);
     const notes = rawNotes ? sanitizeNotes(rawNotes) : undefined;
@@ -99,33 +99,90 @@ export const socialCreateRoutes = new Elysia({ prefix: "/social/create" })
     const totalRecipients = Math.max(uniqueRecipients.length, 1);
 
     if (eventType === "social") {
-      const threadId = crypto.randomUUID();
-      const createdInviteIds: string[] = [];
+      // Helper to create one invite instance for all recipients
+      async function createInviteInstance(
+        instanceStartAt: string,
+        instanceEndAt: string,
+        parentInviteId: string | null,
+        recIndex: number,
+        rule: string | null,
+        ruleEndDate: string | null,
+      ): Promise<{ threadId: string; createdIds: string[] }> {
+        const instThreadId = crypto.randomUUID();
+        const createdIds: string[] = [];
 
-      for (const recipient of uniqueRecipients) {
-        const inviteId = crypto.randomUUID();
-        const organizer = recipient.id === sender.id ? "You" : sender.name;
-        const rsvpStatus = recipient.id === sender.id ? null : null;
+        for (const recipient of uniqueRecipients) {
+          const inviteId = crypto.randomUUID();
+          const organizer = recipient.id === sender.id ? "You" : sender.name;
 
-        await query(
-          `INSERT INTO invites (id, thread_id, user_id, sender_user_id, created_by, title, organizer, group_name, location, start_at, end_at, total_invited, is_group, rsvp_status, notes)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-          [inviteId, threadId, recipient.id, sender.id, sender.id, title, organizer, groupName, location, startAt, endAt, totalRecipients, isGroup, rsvpStatus, notes || null]
-        );
-
-        for (const attendee of uniqueRecipients) {
           await query(
-            "INSERT INTO invite_attendees (invite_id, user_id, name, status, is_friend) VALUES ($1, $2, $3, $4, $5)",
-            [inviteId, attendee.id, attendee.id === sender.id && recipient.id === sender.id ? "You" : attendee.name, null, attendee.isFriend]
+            `INSERT INTO invites (id, thread_id, user_id, sender_user_id, created_by, title, organizer, group_name, location, start_at, end_at, total_invited, is_group, rsvp_status, notes, recurrence_rule, recurrence_end_date, parent_invite_id, recurrence_index)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+            [inviteId, instThreadId, recipient.id, sender.id, sender.id, title, organizer, groupName, location, instanceStartAt, instanceEndAt, totalRecipients, isGroup, null, notes || null, rule, ruleEndDate, parentInviteId, recIndex]
           );
+
+          for (const attendee of uniqueRecipients) {
+            await query(
+              "INSERT INTO invite_attendees (invite_id, user_id, name, status, is_friend) VALUES ($1, $2, $3, $4, $5)",
+              [inviteId, attendee.id, attendee.id === sender.id && recipient.id === sender.id ? "You" : attendee.name, null, attendee.isFriend]
+            );
+          }
+
+          createdIds.push(inviteId);
         }
 
-        createdInviteIds.push(inviteId);
+        for (let i = 0; i < uniqueRecipients.length; i++) {
+          const payload = await buildInviteResponse(createdIds[i]);
+          broadcastToUser(uniqueRecipients[i].id, { type: "invite_upsert", payload });
+        }
+
+        return { threadId: instThreadId, createdIds };
       }
 
-      for (let index = 0; index < uniqueRecipients.length; index++) {
-        const payload = await buildInviteResponse(createdInviteIds[index]);
-        broadcastToUser(uniqueRecipients[index].id, { type: "invite_upsert", payload });
+      // Create the parent invite
+      const parent = await createInviteInstance(startAt, endAt, null, 0, recurrenceRule || null, recurrenceEndDate || null);
+      const parentInviteId = parent.createdIds[0]; // creator's copy
+      const allIds = [...parent.createdIds];
+
+      // Generate recurring instances if rule is set
+      if (recurrenceRule && recurrenceEndDate && eventType === "social") {
+        const endDate = new Date(recurrenceEndDate);
+        const startDate = new Date(date);
+        const startD = new Date(startAt);
+        const endD = new Date(endAt);
+        const durationMs = endD.getTime() - startD.getTime();
+
+        const futureDates: Date[] = [];
+        let current = new Date(startDate);
+        const MAX_INSTANCES = 26;
+
+        for (let i = 1; i <= MAX_INSTANCES; i++) {
+          if (recurrenceRule === "weekly") {
+            current = new Date(current.getTime() + 7 * 24 * 60 * 60 * 1000);
+          } else if (recurrenceRule === "biweekly") {
+            current = new Date(current.getTime() + 14 * 24 * 60 * 60 * 1000);
+          } else if (recurrenceRule === "monthly") {
+            const next = new Date(current);
+            next.setMonth(next.getMonth() + 1);
+            current = next;
+          } else {
+            break;
+          }
+
+          if (current > endDate) break;
+          futureDates.push(new Date(current));
+        }
+
+        for (let i = 0; i < futureDates.length; i++) {
+          const fd = futureDates[i];
+          const dateStr = fd.toISOString().slice(0, 10);
+          const childStart = `${dateStr}T${startTime}:00`;
+          const childEnd = new Date(new Date(childStart).getTime() + durationMs);
+          const childEndStr = `${dateStr}T${childEnd.toTimeString().slice(0, 5)}:00`;
+
+          const child = await createInviteInstance(childStart, childEndStr, parentInviteId, i + 1, recurrenceRule, recurrenceEndDate);
+          allIds.push(...child.createdIds);
+        }
       }
 
       if (isGroup && selectedGroupId && groupName) {
@@ -137,7 +194,7 @@ export const socialCreateRoutes = new Elysia({ prefix: "/social/create" })
       }
 
       set.status = 201;
-      return { success: true, threadId, eventType, sendTo };
+      return { success: true, threadId: parent.threadId, eventType, sendTo, ids: allIds, count: allIds.length };
     }
 
     const threadId = crypto.randomUUID();
@@ -180,5 +237,7 @@ export const socialCreateRoutes = new Elysia({ prefix: "/social/create" })
       startTime: t.String(),
       endTime: t.String(),
       notes: t.Optional(t.String()),
+      recurrenceRule: t.Optional(t.Union([t.String(), t.Null()])),
+      recurrenceEndDate: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   });

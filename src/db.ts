@@ -86,6 +86,7 @@ export async function createTables() {
       ALTER TABLE events ADD COLUMN IF NOT EXISTS recurrence_end_date TEXT;
       ALTER TABLE events ADD COLUMN IF NOT EXISTS parent_event_id TEXT;
       ALTER TABLE events ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS source_invite_id TEXT;
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
     DO $$ BEGIN
@@ -154,6 +155,12 @@ export async function createTables() {
       ALTER TABLE invites ADD COLUMN IF NOT EXISTS created_by TEXT;
       ALTER TABLE invites ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
       ALTER TABLE invites ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS last_nudge_at TIMESTAMPTZ;
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS nudge_count INTEGER DEFAULT 0;
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS recurrence_rule TEXT;
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS recurrence_end_date TEXT;
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS parent_invite_id TEXT;
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS recurrence_index INTEGER DEFAULT 0;
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
     -- Backfill created_by from sender_user_id for existing rows
