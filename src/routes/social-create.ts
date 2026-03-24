@@ -108,9 +108,9 @@ export const socialCreateRoutes = new Elysia({ prefix: "/social/create" })
         const rsvpStatus = recipient.id === sender.id ? null : null;
 
         await query(
-          `INSERT INTO invites (id, thread_id, user_id, sender_user_id, title, organizer, group_name, location, start_at, end_at, total_invited, is_group, rsvp_status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-          [inviteId, threadId, recipient.id, sender.id, title, organizer, groupName, location, startAt, endAt, totalRecipients, isGroup, rsvpStatus]
+          `INSERT INTO invites (id, thread_id, user_id, sender_user_id, created_by, title, organizer, group_name, location, start_at, end_at, total_invited, is_group, rsvp_status, notes)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+          [inviteId, threadId, recipient.id, sender.id, sender.id, title, organizer, groupName, location, startAt, endAt, totalRecipients, isGroup, rsvpStatus, notes || null]
         );
 
         for (const attendee of uniqueRecipients) {

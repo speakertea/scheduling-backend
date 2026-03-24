@@ -88,6 +88,20 @@ const app = new Elysia({ serve: { maxRequestBodySize: 10 * 1024 * 1024 } })
 // Check for upcoming events and push notify every 5 minutes
 setInterval(() => { checkAndSendNotifications().catch(console.error); }, 5 * 60_000);
 
+// Auto-expire invites 24 hours after they end
+setInterval(async () => {
+  try {
+    const result = await dbQuery(
+      "UPDATE invites SET status = 'expired', updated_at = NOW() WHERE status = 'active' AND end_at < (NOW() - INTERVAL '24 hours')::text"
+    );
+    if ((result.rowCount ?? 0) > 0) {
+      console.log(`[invite-expiry] Expired ${result.rowCount} invites`);
+    }
+  } catch (err: any) {
+    console.error("[invite-expiry] Error:", err.message);
+  }
+}, 5 * 60_000);
+
 // Check for scheduled sponsored events every 60 seconds
 setInterval(async () => {
   try {

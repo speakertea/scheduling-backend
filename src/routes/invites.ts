@@ -1,15 +1,24 @@
-﻿import { Elysia, t } from "elysia";
+import { Elysia, t } from "elysia";
 import { query } from "../db";
 import { authGuard } from "./guard";
 import { broadcastToUser } from "../broadcast";
 
-async function toInvite(row: any) {
+function computeTimeStatus(startAt: string, endAt: string): "upcoming" | "happening" | "past" {
+  const now = Date.now();
+  const start = new Date(startAt).getTime();
+  const end = new Date(endAt).getTime();
+  if (now < start) return "upcoming";
+  if (now >= start && now <= end) return "happening";
+  return "past";
+}
+
+async function toInvite(row: any, includeSentAnalytics = false) {
   const { rows: attendees } = await query(
-    "SELECT name, status, is_friend FROM invite_attendees WHERE invite_id = $1 ORDER BY id ASC",
+    "SELECT name, status, is_friend, responded_at FROM invite_attendees WHERE invite_id = $1 ORDER BY id ASC",
     [row.id]
   );
 
-  return {
+  const base: any = {
     id: row.id,
     title: row.title,
     organizer: row.organizer,
@@ -19,12 +28,32 @@ async function toInvite(row: any) {
     endAt: row.end_at,
     totalInvited: row.total_invited,
     rsvpStatus: row.rsvp_status || null,
-    attendees: attendees.map((attendee: any) => ({
-      name: attendee.name,
-      status: attendee.status || null,
-      isFriend: attendee.is_friend,
+    status: row.status || "active",
+    notes: row.notes || null,
+    createdBy: row.created_by || row.sender_user_id || null,
+    timeStatus: computeTimeStatus(row.start_at, row.end_at),
+    updatedAt: row.updated_at || null,
+    cancelledAt: row.cancelled_at || null,
+    cancelReason: row.cancel_reason || null,
+    attendees: attendees.map((a: any) => ({
+      name: a.name,
+      status: a.status || null,
+      isFriend: a.is_friend,
+      respondedAt: a.responded_at || null,
     })),
   };
+
+  if (includeSentAnalytics) {
+    const total = attendees.length;
+    const responded = attendees.filter((a: any) => a.status !== null).length;
+    base.responseRate = total > 0 ? Math.round((responded / total) * 100) : 0;
+    base.yesCount = attendees.filter((a: any) => a.status === "yes").length;
+    base.maybeCount = attendees.filter((a: any) => a.status === "maybe").length;
+    base.noCount = attendees.filter((a: any) => a.status === "no").length;
+    base.pendingCount = attendees.filter((a: any) => a.status === null).length;
+  }
+
+  return base;
 }
 
 async function broadcastInviteRow(row: any) {
@@ -42,17 +71,214 @@ async function recordDeletion(userId: string, inviteId: string) {
 export const inviteRoutes = new Elysia({ prefix: "/invites" })
   .use(authGuard)
 
+  // GET /invites — list invites with filter support
   .get("/", async ({ userId, query: qs }) => {
-    let sql = "SELECT * FROM invites WHERE user_id = $1";
+    const filter = qs.filter || "received";
+    const isSent = filter === "sent";
+
+    let sql: string;
     const params: any[] = [userId];
+
+    if (isSent) {
+      // Sent invites: where the current user created them (show the creator's own copy)
+      sql = "SELECT * FROM invites WHERE created_by = $1 AND user_id = $1";
+    } else {
+      // Received invites: where user_id = current user
+      sql = "SELECT * FROM invites WHERE user_id = $1";
+    }
+
     if (qs.type === "group") sql += " AND is_group = TRUE";
     else if (qs.type === "friend") sql += " AND is_group = FALSE";
+
     sql += " ORDER BY start_at DESC";
 
     const { rows } = await query(sql, params);
-    return Promise.all(rows.map(toInvite));
+    return Promise.all(rows.map((row: any) => toInvite(row, isSent)));
   })
 
+  // GET /invites/stats — overall invite stats
+  .get("/stats", async ({ userId }) => {
+    const { rows: received } = await query(
+      "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE rsvp_status IS NULL AND status = 'active') AS pending, COUNT(*) FILTER (WHERE start_at > NOW()::text AND status = 'active') AS upcoming FROM invites WHERE user_id = $1",
+      [userId]
+    );
+
+    const { rows: sent } = await query(
+      "SELECT COUNT(*) AS total FROM invites WHERE created_by = $1 AND user_id = $1",
+      [userId]
+    );
+
+    // Avg response rate for sent invites
+    const { rows: sentInviteIds } = await query(
+      "SELECT id FROM invites WHERE created_by = $1 AND user_id = $1 AND status = 'active'",
+      [userId]
+    );
+
+    let avgResponseRate = 0;
+    if (sentInviteIds.length > 0) {
+      const ids = sentInviteIds.map((r: any) => r.id);
+      // For each sent invite, find all thread copies and their attendees
+      const { rows: threadIds } = await query(
+        "SELECT DISTINCT thread_id FROM invites WHERE id = ANY($1::text[])",
+        [ids]
+      );
+      const tids = threadIds.map((r: any) => r.thread_id).filter(Boolean);
+
+      if (tids.length > 0) {
+        const { rows: stats } = await query(
+          `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE ia.status IS NOT NULL) AS responded
+           FROM invite_attendees ia
+           JOIN invites i ON ia.invite_id = i.id
+           WHERE i.thread_id = ANY($1::text[]) AND i.user_id = i.created_by`,
+          [tids]
+        );
+        const total = parseInt(stats[0].total || "0");
+        const responded = parseInt(stats[0].responded || "0");
+        avgResponseRate = total > 0 ? Math.round((responded / total) * 100) : 0;
+      }
+    }
+
+    return {
+      totalReceived: parseInt(received[0].total || "0"),
+      pendingResponse: parseInt(received[0].pending || "0"),
+      totalSent: parseInt(sent[0].total || "0"),
+      avgResponseRate,
+      upcomingCount: parseInt(received[0].upcoming || "0"),
+    };
+  })
+
+  // GET /invites/:id/analytics — detailed analytics for a sent invite
+  .get("/:id/analytics", async ({ userId, params, set }) => {
+    const { rows } = await query(
+      "SELECT * FROM invites WHERE id = $1",
+      [params.id]
+    );
+    if (rows.length === 0) { set.status = 404; return { error: "Invite not found" }; }
+
+    const invite = rows[0];
+    if ((invite.created_by || invite.sender_user_id) !== userId) {
+      set.status = 403;
+      return { error: "Only the creator can view analytics" };
+    }
+
+    // Get attendees from the creator's copy of the invite
+    const { rows: attendees } = await query(
+      "SELECT name, status, is_friend, responded_at FROM invite_attendees WHERE invite_id = $1 ORDER BY id ASC",
+      [invite.id]
+    );
+
+    const total = attendees.length;
+    const responded = attendees.filter((a: any) => a.status !== null).length;
+    const yesCount = attendees.filter((a: any) => a.status === "yes").length;
+    const maybeCount = attendees.filter((a: any) => a.status === "maybe").length;
+    const noCount = attendees.filter((a: any) => a.status === "no").length;
+    const pendingCount = attendees.filter((a: any) => a.status === null).length;
+
+    // Timeline
+    const respondedAts = attendees
+      .map((a: any) => a.responded_at)
+      .filter(Boolean)
+      .map((d: string) => new Date(d).getTime());
+
+    return {
+      id: invite.id,
+      title: invite.title,
+      totalInvited: invite.total_invited,
+      responded,
+      responseRate: total > 0 ? Math.round((responded / total) * 100) : 0,
+      breakdown: {
+        yes: yesCount,
+        maybe: maybeCount,
+        no: noCount,
+        pending: pendingCount,
+      },
+      attendees: attendees.map((a: any) => ({
+        name: a.name,
+        status: a.status || null,
+        isFriend: a.is_friend,
+        respondedAt: a.responded_at || null,
+      })),
+      timeline: {
+        created: invite.created_at,
+        firstResponse: respondedAts.length > 0 ? new Date(Math.min(...respondedAts)).toISOString() : null,
+        lastResponse: respondedAts.length > 0 ? new Date(Math.max(...respondedAts)).toISOString() : null,
+      },
+    };
+  })
+
+  // PATCH /invites/:id — edit an invite (creator only, active + upcoming only)
+  .patch("/:id", async ({ userId, params, body, set }) => {
+    const { rows } = await query(
+      "SELECT * FROM invites WHERE id = $1",
+      [params.id]
+    );
+    if (rows.length === 0) { set.status = 404; return { error: "Invite not found" }; }
+
+    const invite = rows[0];
+    const creatorId = invite.created_by || invite.sender_user_id;
+    if (creatorId !== userId) {
+      set.status = 403;
+      return { error: "Only the creator can edit this invite" };
+    }
+
+    if (invite.status !== "active" && invite.status !== null) {
+      set.status = 400;
+      return { error: "Can only edit active invites" };
+    }
+
+    const timeStatus = computeTimeStatus(invite.start_at, invite.end_at);
+    if (timeStatus !== "upcoming") {
+      set.status = 400;
+      return { error: "Can only edit invites that haven't started yet" };
+    }
+
+    // Update all copies in the thread
+    const threadId = invite.thread_id || invite.id;
+    const updates: string[] = [];
+    const values: any[] = [];
+    let idx = 1;
+
+    if (body.title !== undefined) { updates.push(`title = $${idx++}`); values.push(body.title); }
+    if (body.location !== undefined) { updates.push(`location = $${idx++}`); values.push(body.location); }
+    if (body.notes !== undefined) { updates.push(`notes = $${idx++}`); values.push(body.notes); }
+    if (body.startAt !== undefined) { updates.push(`start_at = $${idx++}`); values.push(body.startAt); }
+    if (body.endAt !== undefined) { updates.push(`end_at = $${idx++}`); values.push(body.endAt); }
+
+    if (updates.length === 0) {
+      set.status = 400;
+      return { error: "No fields to update" };
+    }
+
+    updates.push(`updated_at = NOW()`);
+    values.push(threadId);
+
+    await query(
+      `UPDATE invites SET ${updates.join(", ")} WHERE thread_id = $${idx}`,
+      values
+    );
+
+    // Broadcast updates to all recipients
+    const { rows: updatedRows } = await query(
+      "SELECT * FROM invites WHERE thread_id = $1",
+      [threadId]
+    );
+    for (const row of updatedRows) {
+      await broadcastInviteRow(row);
+    }
+
+    const updated = updatedRows.find((r: any) => r.id === params.id) || updatedRows[0];
+    return toInvite(updated);
+  }, {
+    body: t.Object({
+      title: t.Optional(t.String()),
+      location: t.Optional(t.String()),
+      notes: t.Optional(t.String()),
+      startAt: t.Optional(t.String()),
+      endAt: t.Optional(t.String()),
+    }),
+  })
+
+  // PATCH /invites/:id/rsvp — RSVP to an invite
   .patch("/:id/rsvp", async ({ userId, params, body }) => {
     const { status } = body;
     const { rows } = await query(
@@ -74,11 +300,11 @@ export const inviteRoutes = new Elysia({ prefix: "/invites" })
       [invite.thread_id || invite.id]
     );
     await query(
-      "UPDATE invite_attendees SET status = $1 WHERE invite_id IN (SELECT id FROM invites WHERE thread_id = $2) AND user_id = $3",
+      "UPDATE invite_attendees SET status = $1, responded_at = NOW() WHERE invite_id IN (SELECT id FROM invites WHERE thread_id = $2) AND user_id = $3",
       [status, invite.thread_id || invite.id, userId]
     );
     await query(
-      "UPDATE invite_attendees SET status = $1 WHERE invite_id IN (SELECT id FROM invites WHERE thread_id = $2) AND name = $3 AND user_id IS NULL",
+      "UPDATE invite_attendees SET status = $1, responded_at = NOW() WHERE invite_id IN (SELECT id FROM invites WHERE thread_id = $2) AND name = $3 AND user_id IS NULL",
       [status, invite.thread_id || invite.id, currentName]
     );
 
@@ -121,6 +347,118 @@ export const inviteRoutes = new Elysia({ prefix: "/invites" })
     }),
   })
 
+  // POST /invites/:id/cancel — cancel/revoke an invite (creator only)
+  .post("/:id/cancel", async ({ userId, params, body, set }) => {
+    const { rows } = await query(
+      "SELECT * FROM invites WHERE id = $1",
+      [params.id]
+    );
+    if (rows.length === 0) { set.status = 404; return { error: "Invite not found" }; }
+
+    const invite = rows[0];
+    const creatorId = invite.created_by || invite.sender_user_id;
+    if (creatorId !== userId) {
+      set.status = 403;
+      return { error: "Only the creator can cancel this invite" };
+    }
+
+    const threadId = invite.thread_id || invite.id;
+    await query(
+      "UPDATE invites SET status = 'cancelled', cancelled_at = NOW(), cancel_reason = $1, updated_at = NOW() WHERE thread_id = $2",
+      [body.reason || null, threadId]
+    );
+
+    // Broadcast cancellation to all recipients
+    const { rows: updatedRows } = await query(
+      "SELECT * FROM invites WHERE thread_id = $1",
+      [threadId]
+    );
+    for (const row of updatedRows) {
+      await broadcastInviteRow(row);
+    }
+
+    return { success: true };
+  }, {
+    body: t.Object({
+      reason: t.Optional(t.String()),
+    }),
+  })
+
+  // POST /invites/:id/duplicate — duplicate an invite with new dates (creator only)
+  .post("/:id/duplicate", async ({ userId, params, body, set }) => {
+    const { rows } = await query(
+      "SELECT * FROM invites WHERE id = $1",
+      [params.id]
+    );
+    if (rows.length === 0) { set.status = 404; return { error: "Invite not found" }; }
+
+    const invite = rows[0];
+    const creatorId = invite.created_by || invite.sender_user_id;
+    if (creatorId !== userId) {
+      set.status = 403;
+      return { error: "Only the creator can duplicate this invite" };
+    }
+
+    const newStartAt = `${body.date}T${body.startTime}:00`;
+    const newEndAt = `${body.date}T${body.endTime}:00`;
+    const threadId = invite.thread_id || invite.id;
+
+    // Get all recipients from the original thread
+    const { rows: originalCopies } = await query(
+      "SELECT * FROM invites WHERE thread_id = $1 ORDER BY created_at ASC",
+      [threadId]
+    );
+
+    const newThreadId = crypto.randomUUID();
+    const createdIds: string[] = [];
+    const recipientUserIds: string[] = [];
+
+    for (const copy of originalCopies) {
+      const newId = crypto.randomUUID();
+      await query(
+        `INSERT INTO invites (id, thread_id, user_id, sender_user_id, created_by, title, organizer, group_name, location, start_at, end_at, total_invited, is_group, rsvp_status, notes, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'active')`,
+        [newId, newThreadId, copy.user_id, copy.sender_user_id, copy.created_by, invite.title, copy.organizer, invite.group_name, invite.location, newStartAt, newEndAt, invite.total_invited, invite.is_group, null, invite.notes]
+      );
+
+      // Copy attendees
+      const { rows: attendees } = await query(
+        "SELECT name, user_id, is_friend FROM invite_attendees WHERE invite_id = $1",
+        [copy.id]
+      );
+      for (const att of attendees) {
+        await query(
+          "INSERT INTO invite_attendees (invite_id, user_id, name, status, is_friend) VALUES ($1, $2, $3, NULL, $4)",
+          [newId, att.user_id, att.name, att.is_friend]
+        );
+      }
+
+      createdIds.push(newId);
+      recipientUserIds.push(copy.user_id);
+    }
+
+    // Broadcast new invites
+    for (let i = 0; i < createdIds.length; i++) {
+      const { rows: newRows } = await query("SELECT * FROM invites WHERE id = $1", [createdIds[i]]);
+      if (newRows.length > 0) {
+        await broadcastInviteRow(newRows[0]);
+      }
+    }
+
+    // Return the creator's copy
+    const creatorCopyId = createdIds[0];
+    const { rows: creatorRows } = await query("SELECT * FROM invites WHERE id = $1", [creatorCopyId]);
+    set.status = 201;
+    return toInvite(creatorRows[0]);
+  }, {
+    body: t.Object({
+      date: t.String(),
+      startTime: t.String(),
+      endTime: t.String(),
+    }),
+  })
+
+  // DELETE /invites/:id — delete an invite (organizer only)
   .delete("/:id", async ({ userId, params, set }) => {
     const { rows } = await query(
       "SELECT id, thread_id, sender_user_id FROM invites WHERE id = $1 AND user_id = $2",
@@ -147,5 +485,3 @@ export const inviteRoutes = new Elysia({ prefix: "/invites" })
 
     return { success: true };
   });
-
-

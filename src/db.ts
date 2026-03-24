@@ -149,8 +149,15 @@ export async function createTables() {
       ALTER TABLE invites ADD COLUMN IF NOT EXISTS thread_id TEXT;
       ALTER TABLE invites ADD COLUMN IF NOT EXISTS sender_user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
       ALTER TABLE invites ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS notes TEXT;
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS created_by TEXT;
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
+      ALTER TABLE invites ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
+    -- Backfill created_by from sender_user_id for existing rows
+    UPDATE invites SET created_by = sender_user_id WHERE created_by IS NULL AND sender_user_id IS NOT NULL;
     DO $$ BEGIN
       IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'invites' AND column_name = 'user_id')
          AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'invites' AND column_name = 'updated_at') THEN
@@ -171,6 +178,7 @@ export async function createTables() {
     );
     DO $$ BEGIN
       ALTER TABLE invite_attendees ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE invite_attendees ADD COLUMN IF NOT EXISTS responded_at TIMESTAMPTZ;
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
     DO $$ BEGIN
