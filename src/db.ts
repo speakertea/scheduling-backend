@@ -351,9 +351,16 @@ export async function createTables() {
       status             TEXT NOT NULL CHECK(status IN ('pending','accepted','declined','revoked')) DEFAULT 'pending',
       created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       responded_at       TIMESTAMPTZ,
-      responded_by       TEXT REFERENCES users(id) ON DELETE SET NULL,
-      UNIQUE(group_id, invited_user_id, status)
+      responded_by       TEXT REFERENCES users(id) ON DELETE SET NULL
     );
+    DO $$ BEGIN
+      ALTER TABLE group_friend_invites DROP CONSTRAINT IF EXISTS group_friend_invites_group_id_invited_user_id_status_key;
+    EXCEPTION WHEN undefined_table THEN NULL;
+    WHEN undefined_object THEN NULL;
+    END $$;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_group_friend_invites_pending_unique
+      ON group_friend_invites(group_id, invited_user_id)
+      WHERE status = 'pending';
     CREATE INDEX IF NOT EXISTS idx_group_friend_invites_recipient ON group_friend_invites(invited_user_id, status, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_group_friend_invites_group ON group_friend_invites(group_id, status, created_at DESC);
 

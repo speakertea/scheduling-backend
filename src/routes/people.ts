@@ -70,6 +70,18 @@ function buildGroupSuggestions(rangesByUser: Map<string, BusyRange[]>, memberIds
     .slice(0, 5);
 }
 
+async function markPendingGroupFriendInvitesAccepted(groupId: string | null | undefined, userId: string | null | undefined) {
+  if (!groupId || !userId) return [] as string[];
+  const { rows } = await query(
+    `UPDATE group_friend_invites
+     SET status = 'accepted', responded_at = NOW(), responded_by = $1
+     WHERE group_id = $2 AND invited_user_id = $1 AND status = 'pending'
+     RETURNING invited_by_user_id AS "invitedByUserId"`,
+    [userId, groupId]
+  );
+  return rows.map((row: any) => row.invitedByUserId).filter((value: string | null): value is string => Boolean(value));
+}
+
 export const peopleRoutes = new Elysia({ prefix: "/people" })
   .use(authGuard)
 
@@ -339,7 +351,10 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
        FROM group_friend_invites gfi
        JOIN groups_ g ON g.id = gfi.group_id
        JOIN users inviter ON inviter.id = gfi.invited_by_user_id
+       LEFT JOIN group_memberships gm
+         ON gm.group_id = gfi.group_id AND gm.user_id = gfi.invited_user_id
        WHERE gfi.invited_user_id = $1 AND gfi.status = 'pending'
+         AND gm.id IS NULL
        ORDER BY gfi.created_at DESC`,
       [userId]
     );
@@ -375,17 +390,12 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
     }
 
     const invite = invites[0];
+    const inviterIds = await markPendingGroupFriendInvitesAccepted(invite.group_id, userId);
     await query(
       `INSERT INTO group_memberships (id, group_id, user_id, role)
        VALUES ($1, $2, $3, 'member')
        ON CONFLICT (group_id, user_id) DO NOTHING`,
       [crypto.randomUUID(), invite.group_id, userId]
-    );
-    await query(
-      `UPDATE group_friend_invites
-       SET status = 'accepted', responded_at = NOW(), responded_by = $1
-       WHERE group_id = $2 AND invited_user_id = $1 AND status = 'pending'`,
-      [userId, invite.group_id]
     );
     await query(
       `UPDATE group_join_requests
@@ -400,11 +410,13 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
 
     const { rows: userRows } = await query("SELECT name FROM users WHERE id = $1", [userId]);
     const invitedUserName = userRows[0]?.name || "Someone";
-    await sendGroupFriendInviteOutcomePush(invite.invited_by_user_id, {
-      accepted: true,
-      groupName: invite.groupName,
-      invitedUserName,
-    });
+    for (const inviterId of inviterIds.length ? inviterIds : [invite.invited_by_user_id]) {
+      await sendGroupFriendInviteOutcomePush(inviterId, {
+        accepted: true,
+        groupName: invite.groupName,
+        invitedUserName,
+      });
+    }
 
     return { success: true, groupId: invite.group_id, groupName: invite.groupName };
   })
@@ -655,6 +667,7 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
       "UPDATE groups_ SET total_members = (SELECT COUNT(*) FROM group_memberships WHERE group_id = $1) WHERE id = $1",
       [params.id]
     );
+    await markPendingGroupFriendInvitesAccepted(params.id, userId);
     return { success: true };
   })
 
@@ -959,6 +972,7 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
       "UPDATE groups_ SET total_members = (SELECT COUNT(*) FROM group_memberships WHERE group_id = $1) WHERE id = $1",
       [params.id]
     );
+    await markPendingGroupFriendInvitesAccepted(params.id, request.user_id);
     await sendJoinRequestOutcomePush(request.user_id, { approved: true, groupName });
     return { success: true };
   })
@@ -1124,6 +1138,7 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
       "UPDATE groups_ SET total_members = (SELECT COUNT(*) FROM group_memberships WHERE group_id = $1) WHERE id = $1",
       [group_id]
     );
+    await markPendingGroupFriendInvitesAccepted(group_id, userId);
     set.status = 201;
     return { success: true, groupId: group_id, groupName: group_name };
   });
