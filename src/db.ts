@@ -343,6 +343,20 @@ export async function createTables() {
       UNIQUE(group_id, user_id)
     );
 
+    CREATE TABLE IF NOT EXISTS group_friend_invites (
+      id                 TEXT PRIMARY KEY,
+      group_id           TEXT NOT NULL REFERENCES groups_(id) ON DELETE CASCADE,
+      invited_user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      invited_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status             TEXT NOT NULL CHECK(status IN ('pending','accepted','declined','revoked')) DEFAULT 'pending',
+      created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      responded_at       TIMESTAMPTZ,
+      responded_by       TEXT REFERENCES users(id) ON DELETE SET NULL,
+      UNIQUE(group_id, invited_user_id, status)
+    );
+    CREATE INDEX IF NOT EXISTS idx_group_friend_invites_recipient ON group_friend_invites(invited_user_id, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_group_friend_invites_group ON group_friend_invites(group_id, status, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS sponsored_events (
       id                TEXT PRIMARY KEY,
       title             TEXT NOT NULL,

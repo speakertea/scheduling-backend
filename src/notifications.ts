@@ -114,6 +114,50 @@ export async function sendJoinRequestOutcomePush(
   ]);
 }
 
+export async function sendGroupFriendInvitePush(
+  recipientUserId: string,
+  payload: { groupName: string; invitedByName: string }
+) {
+  const { rows } = await query(
+    "SELECT push_token AS \"pushToken\" FROM users WHERE id = $1 AND push_token IS NOT NULL",
+    [recipientUserId]
+  );
+  const pushToken = rows[0]?.pushToken;
+  if (!pushToken) return;
+
+  await sendExpoPush([
+    {
+      to: pushToken,
+      title: "Group invite",
+      body: `${payload.invitedByName} invited you to join ${payload.groupName}`,
+      sound: "default",
+    },
+  ]);
+}
+
+export async function sendGroupFriendInviteOutcomePush(
+  recipientUserId: string,
+  payload: { accepted: boolean; groupName: string; invitedUserName: string }
+) {
+  const { rows } = await query(
+    "SELECT push_token AS \"pushToken\" FROM users WHERE id = $1 AND push_token IS NOT NULL",
+    [recipientUserId]
+  );
+  const pushToken = rows[0]?.pushToken;
+  if (!pushToken) return;
+
+  await sendExpoPush([
+    {
+      to: pushToken,
+      title: payload.accepted ? "Group invite accepted" : "Group invite declined",
+      body: payload.accepted
+        ? `${payload.invitedUserName} joined ${payload.groupName}`
+        : `${payload.invitedUserName} declined ${payload.groupName}`,
+      sound: "default",
+    },
+  ]);
+}
+
 /**
  * Finds events starting within the next 30 minutes that haven't been notified,
  * sends Expo push notifications, then marks them as notified.

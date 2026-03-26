@@ -1,7 +1,12 @@
 import { Elysia, t } from "elysia";
 import { query } from "../db";
 import { authGuard } from "./guard";
-import { sendGroupJoinRequestPush, sendJoinRequestOutcomePush } from "../notifications";
+import {
+  sendGroupFriendInviteOutcomePush,
+  sendGroupFriendInvitePush,
+  sendGroupJoinRequestPush,
+  sendJoinRequestOutcomePush,
+} from "../notifications";
 
 type BusyRange = {
   start: Date;
@@ -320,6 +325,122 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
     body: t.Object({ name: t.String() }),
   })
 
+  .get("/group-invites", async ({ userId }) => {
+    const { rows } = await query(
+      `SELECT gfi.id,
+              gfi.created_at AS "createdAt",
+              g.id AS "groupId",
+              g.name AS "groupName",
+              g.group_photo AS "groupPhoto",
+              inviter.id AS "invitedById",
+              inviter.name AS "invitedByName",
+              inviter.username AS "invitedByUsername",
+              inviter.profile_picture AS "invitedByProfilePicture"
+       FROM group_friend_invites gfi
+       JOIN groups_ g ON g.id = gfi.group_id
+       JOIN users inviter ON inviter.id = gfi.invited_by_user_id
+       WHERE gfi.invited_user_id = $1 AND gfi.status = 'pending'
+       ORDER BY gfi.created_at DESC`,
+      [userId]
+    );
+
+    return rows.map((row: any) => ({
+      id: row.id,
+      createdAt: row.createdAt,
+      group: {
+        id: row.groupId,
+        name: row.groupName,
+        groupPhoto: row.groupPhoto,
+      },
+      invitedBy: {
+        id: row.invitedById,
+        name: row.invitedByName,
+        username: row.invitedByUsername,
+        profilePicture: row.invitedByProfilePicture,
+      },
+    }));
+  })
+
+  .post("/group-invites/:inviteId/accept", async ({ userId, params, set }) => {
+    const { rows: invites } = await query(
+      `SELECT gfi.group_id, gfi.invited_by_user_id, g.name AS "groupName"
+       FROM group_friend_invites gfi
+       JOIN groups_ g ON g.id = gfi.group_id
+       WHERE gfi.id = $1 AND gfi.invited_user_id = $2 AND gfi.status = 'pending'`,
+      [params.inviteId, userId]
+    );
+    if (invites.length === 0) {
+      set.status = 404;
+      return { error: "Group invite not found." };
+    }
+
+    const invite = invites[0];
+    await query(
+      `INSERT INTO group_memberships (id, group_id, user_id, role)
+       VALUES ($1, $2, $3, 'member')
+       ON CONFLICT (group_id, user_id) DO NOTHING`,
+      [crypto.randomUUID(), invite.group_id, userId]
+    );
+    await query(
+      `UPDATE group_friend_invites
+       SET status = 'accepted', responded_at = NOW(), responded_by = $1
+       WHERE group_id = $2 AND invited_user_id = $1 AND status = 'pending'`,
+      [userId, invite.group_id]
+    );
+    await query(
+      `UPDATE group_join_requests
+       SET status = 'approved', reviewed_at = NOW(), reviewed_by = $1
+       WHERE group_id = $2 AND user_id = $1 AND status = 'pending'`,
+      [userId, invite.group_id]
+    );
+    await query(
+      "UPDATE groups_ SET total_members = (SELECT COUNT(*) FROM group_memberships WHERE group_id = $1) WHERE id = $1",
+      [invite.group_id]
+    );
+
+    const { rows: userRows } = await query("SELECT name FROM users WHERE id = $1", [userId]);
+    const invitedUserName = userRows[0]?.name || "Someone";
+    await sendGroupFriendInviteOutcomePush(invite.invited_by_user_id, {
+      accepted: true,
+      groupName: invite.groupName,
+      invitedUserName,
+    });
+
+    return { success: true, groupId: invite.group_id, groupName: invite.groupName };
+  })
+
+  .post("/group-invites/:inviteId/decline", async ({ userId, params, set }) => {
+    const { rows: invites } = await query(
+      `SELECT gfi.group_id, gfi.invited_by_user_id, g.name AS "groupName"
+       FROM group_friend_invites gfi
+       JOIN groups_ g ON g.id = gfi.group_id
+       WHERE gfi.id = $1 AND gfi.invited_user_id = $2 AND gfi.status = 'pending'`,
+      [params.inviteId, userId]
+    );
+    if (invites.length === 0) {
+      set.status = 404;
+      return { error: "Group invite not found." };
+    }
+
+    const invite = invites[0];
+    await query(
+      `UPDATE group_friend_invites
+       SET status = 'declined', responded_at = NOW(), responded_by = $1
+       WHERE id = $2 AND invited_user_id = $1 AND status = 'pending'`,
+      [userId, params.inviteId]
+    );
+
+    const { rows: userRows } = await query("SELECT name FROM users WHERE id = $1", [userId]);
+    const invitedUserName = userRows[0]?.name || "Someone";
+    await sendGroupFriendInviteOutcomePush(invite.invited_by_user_id, {
+      accepted: false,
+      groupName: invite.groupName,
+      invitedUserName,
+    });
+
+    return { success: true };
+  })
+
   // Group detail
   .get("/groups/:id", async ({ userId, params, set }) => {
     const { rows: groups } = await query(
@@ -364,6 +485,111 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
     return { success: true, groupPhoto };
   }, {
     body: t.Object({ groupPhoto: t.String() }),
+  })
+
+  .get("/groups/:id/invitable-friends", async ({ userId, params, set }) => {
+    const { rows: membership } = await query(
+      "SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0 || membership[0].role !== "admin") {
+      set.status = 403;
+      return { error: "Only group admins can invite friends." };
+    }
+
+    const { rows } = await query(
+      `SELECT u.id, u.name, u.username, u.profile_picture AS "profilePicture",
+              EXISTS(
+                SELECT 1
+                FROM group_friend_invites gfi
+                WHERE gfi.group_id = $2
+                  AND gfi.invited_user_id = u.id
+                  AND gfi.status = 'pending'
+              ) AS "pendingInvite"
+       FROM friend_connections fc
+       JOIN users u ON u.id = fc.friend_user_id
+       WHERE fc.user_id = $1
+         AND NOT EXISTS (
+           SELECT 1 FROM group_memberships gm WHERE gm.group_id = $2 AND gm.user_id = u.id
+         )
+       ORDER BY u.name ASC`,
+      [userId, params.id]
+    );
+
+    return rows;
+  })
+
+  .post("/groups/:id/friend-invites", async ({ userId, params, body, set }) => {
+    const { rows: membership } = await query(
+      "SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0 || membership[0].role !== "admin") {
+      set.status = 403;
+      return { error: "Only group admins can invite friends." };
+    }
+    if (body.targetUserId === userId) {
+      set.status = 400;
+      return { error: "You cannot invite yourself." };
+    }
+
+    const { rows: friendRows } = await query(
+      `SELECT u.id, u.name
+       FROM friend_connections fc
+       JOIN users u ON u.id = fc.friend_user_id
+       WHERE fc.user_id = $1 AND fc.friend_user_id = $2 AND u.is_disabled = FALSE`,
+      [userId, body.targetUserId]
+    );
+    if (friendRows.length === 0) {
+      set.status = 404;
+      return { error: "Friend not found." };
+    }
+
+    const { rows: memberRows } = await query(
+      "SELECT id FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, body.targetUserId]
+    );
+    if (memberRows.length > 0) {
+      set.status = 409;
+      return { error: "This friend is already in the group." };
+    }
+
+    const { rows: pendingRows } = await query(
+      "SELECT id FROM group_friend_invites WHERE group_id = $1 AND invited_user_id = $2 AND status = 'pending'",
+      [params.id, body.targetUserId]
+    );
+    if (pendingRows.length > 0) {
+      set.status = 409;
+      return { error: "This friend already has a pending invite." };
+    }
+
+    const { rows: groupRows } = await query("SELECT name FROM groups_ WHERE id = $1", [params.id]);
+    if (groupRows.length === 0) {
+      set.status = 404;
+      return { error: "Group not found." };
+    }
+
+    const { rows: inviterRows } = await query("SELECT name FROM users WHERE id = $1", [userId]);
+    const inviteId = crypto.randomUUID();
+    await query(
+      `INSERT INTO group_friend_invites (id, group_id, invited_user_id, invited_by_user_id)
+       VALUES ($1, $2, $3, $4)`,
+      [inviteId, params.id, body.targetUserId, userId]
+    );
+
+    await sendGroupFriendInvitePush(body.targetUserId, {
+      groupName: groupRows[0].name,
+      invitedByName: inviterRows[0]?.name || "Someone",
+    });
+
+    set.status = 201;
+    return {
+      id: inviteId,
+      invitedUserId: body.targetUserId,
+      status: "pending",
+    };
+  }, {
+    body: t.Object({ targetUserId: t.String() }),
   })
 
   .get("/groups/:id/suggest-times", async ({ userId, params, query: qs, set }) => {
