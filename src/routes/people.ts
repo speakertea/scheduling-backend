@@ -26,6 +26,19 @@ function clampPositiveInt(value: unknown, fallback: number, max = 365) {
   return Math.min(Math.max(Math.round(parsed), 1), max);
 }
 
+const GROUP_DESCRIPTION_MAX_LENGTH = 77;
+
+function sanitizeGroupName(value: string) {
+  return value.trim().replace(/\s+/g, " ").slice(0, 60);
+}
+
+function sanitizeGroupDescription(value: string | null | undefined) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().replace(/\s+/g, " ");
+  if (!trimmed) return null;
+  return trimmed.slice(0, GROUP_DESCRIPTION_MAX_LENGTH);
+}
+
 function buildGroupSuggestions(rangesByUser: Map<string, BusyRange[]>, memberIds: string[], durationMinutes: number) {
   const suggestions: Array<{ startAt: string; endAt: string; availableCount: number; unavailableCount: number }> = [];
   const durationMs = durationMinutes * 60_000;
@@ -306,7 +319,7 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
   // List groups user belongs to
   .get("/groups", async ({ userId }) => {
     const { rows } = await query(
-      `SELECT g.id, g.name, g.group_photo AS "groupPhoto", gm.role,
+      `SELECT g.id, g.name, g.description, g.group_photo AS "groupPhoto", gm.role,
               (SELECT COUNT(*) FROM group_memberships WHERE group_id = g.id)::int AS "memberCount"
        FROM group_memberships gm
        JOIN groups_ g ON g.id = gm.group_id
@@ -319,12 +332,12 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
 
   // Create group
   .post("/groups", async ({ userId, body, set }) => {
-    const name = body.name.trim();
+    const name = sanitizeGroupName(body.name);
     if (!name) { set.status = 400; return { error: "Group name is required." }; }
 
     const groupId = crypto.randomUUID();
     await query(
-      "INSERT INTO groups_ (id, name, total_members, group_photo) VALUES ($1, $2, 1, '')",
+      "INSERT INTO groups_ (id, name, description, total_members, group_photo) VALUES ($1, $2, NULL, 1, '')",
       [groupId, name]
     );
     await query(
@@ -332,7 +345,7 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
       [crypto.randomUUID(), groupId, userId]
     );
     set.status = 201;
-    return { id: groupId, name, groupPhoto: "", memberCount: 1, role: "admin" };
+    return { id: groupId, name, description: null, groupPhoto: "", memberCount: 1, role: "admin" };
   }, {
     body: t.Object({ name: t.String() }),
   })
@@ -343,6 +356,7 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
               gfi.created_at AS "createdAt",
               g.id AS "groupId",
               g.name AS "groupName",
+              g.description AS "groupDescription",
               g.group_photo AS "groupPhoto",
               inviter.id AS "invitedById",
               inviter.name AS "invitedByName",
@@ -365,6 +379,7 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
       group: {
         id: row.groupId,
         name: row.groupName,
+        description: row.groupDescription,
         groupPhoto: row.groupPhoto,
       },
       invitedBy: {
@@ -453,10 +468,34 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
     return { success: true };
   })
 
+  .delete("/groups/:id/friend-invites/:targetUserId", async ({ userId, params, set }) => {
+    const { rows: membership } = await query(
+      "SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0 || membership[0].role !== "admin") {
+      set.status = 403;
+      return { error: "Only group admins can cancel friend invites." };
+    }
+
+    const result = await query(
+      `UPDATE group_friend_invites
+       SET status = 'revoked', responded_at = NOW(), responded_by = $1
+       WHERE group_id = $2 AND invited_user_id = $3 AND status = 'pending'`,
+      [userId, params.id, params.targetUserId]
+    );
+    if (!result.rowCount) {
+      set.status = 404;
+      return { error: "Pending invite not found." };
+    }
+
+    return { success: true };
+  })
+
   // Group detail
   .get("/groups/:id", async ({ userId, params, set }) => {
     const { rows: groups } = await query(
-      "SELECT id, name, group_photo AS \"groupPhoto\" FROM groups_ WHERE id = $1",
+      "SELECT id, name, description, group_photo AS \"groupPhoto\" FROM groups_ WHERE id = $1",
       [params.id]
     );
     if (groups.length === 0) { set.status = 404; return { error: "Group not found." }; }
@@ -475,11 +514,61 @@ export const peopleRoutes = new Elysia({ prefix: "/people" })
     return {
       id: group.id,
       name: group.name,
+      description: group.description,
       groupPhoto: group.groupPhoto,
       memberCount: members.length,
       currentUserRole: currentMember?.role ?? null,
       members,
     };
+  })
+
+  .patch("/groups/:id", async ({ userId, params, body, set }) => {
+    const { rows: membership } = await query(
+      "SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2",
+      [params.id, userId]
+    );
+    if (membership.length === 0 || membership[0].role !== "admin") {
+      set.status = 403;
+      return { error: "Only group admins can update group details." };
+    }
+
+    const updates: string[] = [];
+    const values: any[] = [];
+    let index = 1;
+
+    if (body.name !== undefined) {
+      const name = sanitizeGroupName(body.name);
+      if (!name) {
+        set.status = 400;
+        return { error: "Group name is required." };
+      }
+            updates.push(`name = $${index++}`);
+      values.push(name);
+    }
+
+    if (body.description !== undefined) {
+      const description = sanitizeGroupDescription(body.description);
+            updates.push(`description = $${index++}`);
+      values.push(description);
+    }
+
+    if (updates.length === 0) {
+      set.status = 400;
+      return { error: "Nothing to update." };
+    }
+
+    values.push(params.id);
+    const { rows } = await query(
+      `UPDATE groups_ SET ${updates.join(", ")} WHERE id = $${index} RETURNING id, name, description, group_photo AS "groupPhoto"`,
+      values
+    );
+
+    return { success: true, ...rows[0] };
+  }, {
+    body: t.Object({
+      name: t.Optional(t.String()),
+      description: t.Optional(t.Union([t.String(), t.Null()])),
+    }),
   })
 
   .patch("/groups/:id/photo", async ({ userId, params, body, set }) => {

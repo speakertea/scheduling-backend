@@ -106,11 +106,16 @@ export async function createTables() {
     CREATE TABLE IF NOT EXISTS groups_ (
       id            TEXT PRIMARY KEY,
       name          TEXT NOT NULL,
+      description   TEXT,
       total_members INTEGER NOT NULL,
       group_photo   TEXT NOT NULL DEFAULT ''
     );
     DO $$ BEGIN
       ALTER TABLE groups_ ADD COLUMN IF NOT EXISTS group_photo TEXT NOT NULL DEFAULT '';
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
+    DO $$ BEGIN
+      ALTER TABLE groups_ ADD COLUMN IF NOT EXISTS description TEXT;
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
 
