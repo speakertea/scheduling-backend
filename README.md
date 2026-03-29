@@ -26,7 +26,7 @@ createdb scheduling_app
 
 ```bash
 cd backend
-cp .env.example .env    # edit DATABASE_URL if your Postgres credentials differ
+cp .env.example .env    # set a real JWT_SECRET and edit DATABASE_URL if your Postgres credentials differ
 bun install
 bun run dev             # auto-restarts on file changes
 ```
@@ -89,7 +89,7 @@ git push -u origin main
    - **Start Command:** `~/.bun/bin/bun run src/index.ts`
 4. Add environment variables:
    - `DATABASE_URL` = the Internal Database URL you copied
-   - `JWT_SECRET` = any long random string
+   - `JWT_SECRET` = a long random string you generated yourself; do not use a placeholder
    - `PORT` = `10000` (Render's default)
 5. Click **Deploy**
 

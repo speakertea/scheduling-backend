@@ -10,6 +10,17 @@ export function removeConnection(userId: string, ws: any): void {
   if (connections.get(userId)?.size === 0) connections.delete(userId);
 }
 
+export function disconnectUser(userId: string): void {
+  const conns = connections.get(userId);
+  if (!conns?.size) return;
+  for (const ws of conns) {
+    try {
+      ws.close();
+    } catch {}
+  }
+  connections.delete(userId);
+}
+
 export function broadcastToUser(userId: string, message: object): void {
   const conns = connections.get(userId);
   if (!conns?.size) return;

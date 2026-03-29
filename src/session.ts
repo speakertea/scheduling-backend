@@ -12,7 +12,26 @@ function buildRefreshToken() {
   return `${crypto.randomUUID()}-${crypto.randomUUID()}`;
 }
 
+async function getSessionUser(userId: string) {
+  const { rows } = await query(
+    "SELECT id, is_disabled, token_version FROM users WHERE id = $1",
+    [userId]
+  );
+  return rows[0] || null;
+}
+
+export async function revokeAllSessionsForUser(userId: string) {
+  await query(
+    "UPDATE refresh_sessions SET revoked_at = COALESCE(revoked_at, NOW()) WHERE user_id = $1 AND revoked_at IS NULL",
+    [userId]
+  );
+}
+
 export async function createSessionTokens(userId: string) {
+  const user = await getSessionUser(userId);
+  if (!user) throw new Error("User not found");
+  if (user.is_disabled) throw new Error("Cannot create a session for a disabled user");
+
   const refreshToken = buildRefreshToken();
   const refreshTokenHash = hashRefreshToken(refreshToken);
   const sessionId = crypto.randomUUID();
@@ -24,7 +43,7 @@ export async function createSessionTokens(userId: string) {
   );
 
   return {
-    accessToken: signToken(userId),
+    accessToken: signToken(userId, user.token_version ?? 0),
     refreshToken,
   };
 }
@@ -32,12 +51,13 @@ export async function createSessionTokens(userId: string) {
 export async function rotateRefreshToken(refreshToken: string) {
   const tokenHash = hashRefreshToken(refreshToken);
   const { rows } = await query(
-    `SELECT id, user_id
-     FROM refresh_sessions
+    `SELECT rs.id, rs.user_id, u.is_disabled, u.token_version
+     FROM refresh_sessions rs
+     JOIN users u ON u.id = rs.user_id
      WHERE token_hash = $1
        AND revoked_at IS NULL
        AND expires_at > NOW()
-     ORDER BY created_at DESC
+     ORDER BY rs.created_at DESC
      LIMIT 1`,
     [tokenHash]
   );
@@ -45,6 +65,11 @@ export async function rotateRefreshToken(refreshToken: string) {
   if (rows.length === 0) return null;
 
   const session = rows[0];
+  if (session.is_disabled) {
+    await revokeAllSessionsForUser(session.user_id);
+    return null;
+  }
+
   const nextRefreshToken = buildRefreshToken();
   const nextHash = hashRefreshToken(nextRefreshToken);
   const nextSessionId = crypto.randomUUID();
@@ -57,7 +82,7 @@ export async function rotateRefreshToken(refreshToken: string) {
   );
 
   return {
-    accessToken: signToken(session.user_id),
+    accessToken: signToken(session.user_id, session.token_version ?? 0),
     refreshToken: nextRefreshToken,
     userId: session.user_id as string,
   };

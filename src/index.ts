@@ -20,11 +20,12 @@ import { sponsoredRoutes } from "./routes/sponsored";
 import { syncRoutes } from "./routes/sync";
 import { query as dbQuery } from "./db";
 import { sendSponsoredEvent } from "./sponsored-send";
-import { verifyToken } from "./auth";
+import { assertJwtConfigured, verifyToken } from "./auth";
 import { addConnection, removeConnection } from "./broadcast";
 
 const PORT = Number(process.env.PORT) || 3000;
 
+assertJwtConfigured();
 await createTables();
 
 const app = new Elysia({ serve: { maxRequestBodySize: 10 * 1024 * 1024 } })
@@ -65,10 +66,22 @@ const app = new Elysia({ serve: { maxRequestBodySize: 10 * 1024 * 1024 } })
       .use(syncRoutes)
       .ws("/ws", {
         query: t.Object({ token: t.Optional(t.String()) }),
-        open(ws) {
+        async open(ws) {
           const token = (ws.data.query as any)?.token ?? "";
           try {
-            const { userId } = verifyToken(token);
+            const { userId, tokenVersion } = verifyToken(token);
+            const { rows } = await dbQuery(
+              "SELECT is_disabled, token_version FROM users WHERE id = $1",
+              [userId]
+            );
+            if (
+              rows.length === 0 ||
+              rows[0].is_disabled ||
+              (rows[0].token_version ?? 0) !== tokenVersion
+            ) {
+              ws.close();
+              return;
+            }
             (ws.data as any).userId = userId;
             addConnection(userId, ws);
           } catch {
@@ -126,5 +139,4 @@ console.log(`
 `);
 
 export type App = typeof app;
-
 

@@ -12,11 +12,18 @@ export const authGuard = new Elysia({ name: "authGuard" })
     }
 
     try {
-      const { userId } = verifyToken(token);
-      const { rows } = await query("SELECT is_disabled, location_updated_at FROM users WHERE id = $1", [userId]);
+      const { userId, tokenVersion } = verifyToken(token);
+      const { rows } = await query(
+        "SELECT is_disabled, location_updated_at, token_version FROM users WHERE id = $1",
+        [userId]
+      );
       if (rows.length === 0) {
         set.status = 401;
         return { userId: null as string | null, authError: "User not found" };
+      }
+      if ((rows[0].token_version ?? 0) !== tokenVersion) {
+        set.status = 401;
+        return { userId: null as string | null, authError: "Invalid or expired token" };
       }
       if (rows[0].is_disabled) {
         set.status = 403;

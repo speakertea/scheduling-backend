@@ -33,6 +33,7 @@ export async function createTables() {
       profile_picture TEXT NOT NULL DEFAULT '',
       is_admin        BOOLEAN NOT NULL DEFAULT FALSE,
       is_disabled     BOOLEAN NOT NULL DEFAULT FALSE,
+      token_version   INTEGER NOT NULL DEFAULT 0,
       last_active_at  TIMESTAMPTZ,
       push_token      TEXT,
       created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -41,6 +42,7 @@ export async function createTables() {
     DO $$ BEGIN
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_disabled BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS username_changed_at TIMESTAMPTZ;

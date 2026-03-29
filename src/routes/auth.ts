@@ -5,7 +5,8 @@ import { query, generateReferralCode, updateUserLocation } from "../db";
 import { verifyToken } from "../auth";
 import { sanitizeEmail } from "../utils";
 import { lookupIP } from "../geo";
-import { createSessionTokens, rotateRefreshToken } from "../session";
+import { createSessionTokens, revokeAllSessionsForUser, rotateRefreshToken } from "../session";
+import { disconnectUser } from "../broadcast";
 
 function extractIP(headers: Record<string, string | undefined>): string {
   return headers["x-forwarded-for"]?.split(",")[0]?.trim() || "unknown";
@@ -298,9 +299,9 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
   .get("/me", async ({ headers, set }) => {
     const token = (headers.authorization || "").replace("Bearer ", "");
     try {
-      const { userId } = verifyToken(token);
+      const { userId, tokenVersion } = verifyToken(token);
       const { rows } = await query(
-        "SELECT id, email, username, name, about_me, profile_picture, created_at FROM users WHERE id = $1",
+        "SELECT id, email, username, name, about_me, profile_picture, created_at, is_disabled, token_version FROM users WHERE id = $1",
         [userId]
       );
       if (rows.length === 0) {
@@ -308,6 +309,14 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
         return { error: "User not found" };
       }
       const user = rows[0];
+      if ((user.token_version ?? 0) !== tokenVersion) {
+        set.status = 401;
+        return { error: "Invalid token" };
+      }
+      if (user.is_disabled) {
+        set.status = 403;
+        return { error: "Account disabled" };
+      }
       return {
         id: user.id,
         email: user.email,
@@ -388,7 +397,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     await query("UPDATE verification_codes SET used = TRUE WHERE id = $1", [record.id]);
     const hash = bcrypt.hashSync(newPassword, 10);
     const result = await query(
-      "UPDATE users SET password_hash = $1 WHERE email = $2 RETURNING id, email, username, name",
+      "UPDATE users SET password_hash = $1, token_version = token_version + 1 WHERE email = $2 RETURNING id, email, username, name, is_disabled",
       [hash, cleanEmail]
     );
 
@@ -398,6 +407,12 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     }
 
     const user = result.rows[0];
+    await revokeAllSessionsForUser(user.id);
+    disconnectUser(user.id);
+    if (user.is_disabled) {
+      set.status = 403;
+      return { error: "Account disabled" };
+    }
     const tokens = await createSessionTokens(user.id);
     return { success: true, ...tokens, user: { id: user.id, email: user.email, username: user.username, name: user.name } };
   }, {

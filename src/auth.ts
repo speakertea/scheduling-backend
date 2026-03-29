@@ -1,13 +1,29 @@
 import jwt from "jsonwebtoken";
 
-const secret = () => process.env.JWT_SECRET || "dev-secret-change-me";
+const JWT_SECRET_PLACEHOLDERS = new Set([
+  "",
+  "change-me-to-a-real-secret-in-production",
+  "dev-secret-change-me",
+]);
 
-export type AuthPayload = { userId: string };
+function getJwtSecret(): string {
+  const jwtSecret = (process.env.JWT_SECRET || "").trim();
+  if (JWT_SECRET_PLACEHOLDERS.has(jwtSecret)) {
+    throw new Error("JWT_SECRET must be set to a strong, non-placeholder value.");
+  }
+  return jwtSecret;
+}
 
-export function signToken(userId: string): string {
-  return jwt.sign({ userId }, secret(), { expiresIn: "15m" });
+export type AuthPayload = { userId: string; tokenVersion: number };
+
+export function assertJwtConfigured(): void {
+  void getJwtSecret();
+}
+
+export function signToken(userId: string, tokenVersion: number): string {
+  return jwt.sign({ userId, tokenVersion }, getJwtSecret(), { expiresIn: "15m" });
 }
 
 export function verifyToken(token: string): AuthPayload {
-  return jwt.verify(token, secret()) as AuthPayload;
+  return jwt.verify(token, getJwtSecret()) as AuthPayload;
 }

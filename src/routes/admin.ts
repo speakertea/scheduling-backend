@@ -3,6 +3,8 @@ import { query, logAudit } from "../db";
 import { adminGuard } from "./admin-guard";
 import { sendSponsoredEvent } from "../sponsored-send";
 import { Resend } from "resend";
+import { revokeAllSessionsForUser } from "../session";
+import { disconnectUser } from "../broadcast";
 
 export const adminRoutes = new Elysia({ prefix: "/admin" })
   .use(adminGuard)
@@ -111,7 +113,9 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
   /* Disable user */
   .post("/users/:id/disable", async ({ params, userId, set }) => {
     if (params.id === userId) { set.status = 400; return { error: "Cannot disable yourself" }; }
-    await query("UPDATE users SET is_disabled = TRUE WHERE id = $1", [params.id]);
+    await query("UPDATE users SET is_disabled = TRUE, token_version = token_version + 1 WHERE id = $1", [params.id]);
+    await revokeAllSessionsForUser(params.id);
+    disconnectUser(params.id);
     await logAudit(userId!, "disable_user", params.id);
     return { success: true };
   })
